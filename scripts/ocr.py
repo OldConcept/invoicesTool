@@ -18,6 +18,7 @@ import json
 import re
 import os
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 
 os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
 warnings.filterwarnings('ignore')
@@ -450,51 +451,152 @@ def process(pdf_path):
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 目录扫描：快速判断 PDF 是否为发票（仅文本提取，不做 OCR）
+# 目录扫描：三阶段判断
+#   1) 先扫码（QR）
+#   2) 再文本提取补全判断
+#   3) 文本为空/低置信时做轻量 OCR（仅第一页）
 # ─────────────────────────────────────────────────────────────────────────────
 
-_INVOICE_SCAN_KEYWORDS = [
-    '发票', '增值税', '税务总局', '发票代码', '发票号码',
-    '价税合计', '开票日期', '纳税人识别号', '统一社会信用代码',
-    '销售方', '购买方', '电子客票', '铁路', '票价', '酒店',
+_SCAN_STRONG_KEYWORDS = [
+    '发票代码', '发票号码', '开票日期', '价税合计', '纳税人识别号',
+    '统一社会信用代码', '销售方', '购买方', '增值税',
 ]
 
-def _is_invoice_pdf(pdf_path):
-    try:
-        import fitz  # type: ignore
-        doc = fitz.open(pdf_path)
-        text = ''
-        for page in doc:
-            text += page.get_text()
-            if len(text) > 4000:
-                break
-        doc.close()
-        return any(kw in text for kw in _INVOICE_SCAN_KEYWORDS)
-    except Exception:
-        return False
+_SCAN_WEAK_KEYWORDS = [
+    '电子发票', '普通发票', '专用发票', '税务总局', '行程单',
+    '电子客票', '铁路', '票价', '酒店', '出租车',
+]
 
-def scan_folder_for_invoices(folder_path):
+_SCAN_SCORE_CONFIDENT = 4
+_SCAN_SCORE_LOW_CONF = 3
+_SCAN_MODE_SET = {'fast', 'balanced', 'accurate'}
+
+def _scan_text_score(text):
+    normalized = text.replace(' ', '').replace('\t', '')
+    strong_hits = [kw for kw in _SCAN_STRONG_KEYWORDS if kw in normalized]
+    weak_hits = [kw for kw in _SCAN_WEAK_KEYWORDS if kw in normalized]
+    score = len(strong_hits) * 2 + len(weak_hits)
+    if '¥' in text or '￥' in text:
+        score += 1
+    return score, strong_hits, weak_hits
+
+
+def _scan_with_qr(pdf_path, mode='balanced'):
+    qr_fields = {}
+    for qr_text in extract_qr_from_pdf(pdf_path, max_pages=1):
+        parsed = parse_invoice_qr(qr_text)
+        qr_fields.update({k: v for k, v in parsed.items() if v is not None})
+
+    # 常见可靠组合：有发票号 + (金额或日期)
+    qr_confident = bool(
+        qr_fields.get('invoice_no')
+        and (qr_fields.get('total') is not None or qr_fields.get('date') is not None)
+    )
+    return qr_fields, qr_confident
+
+
+def _scan_with_text(pdf_path, mode='balanced'):
+    max_pages = 1 if mode == 'fast' else 2
+    lines, is_text_based = extract_text_from_pdf(pdf_path, max_pages=max_pages)
+    text = '\n'.join(lines) if lines else ''
+    score, strong_hits, _ = _scan_text_score(text)
+    confident = len(strong_hits) >= 2 or score >= _SCAN_SCORE_CONFIDENT
+    low_confidence = (not is_text_based) or score < _SCAN_SCORE_LOW_CONF
+    return {
+        'is_text_based': is_text_based,
+        'score': score,
+        'confident': confident,
+        'low_confidence': low_confidence,
+    }
+
+
+def _scan_with_light_ocr(pdf_path):
+    try:
+        lines = run_ocr(pdf_to_images(pdf_path, max_pages=1))
+    except Exception:
+        lines = []
+    text = '\n'.join(lines) if lines else ''
+    score, strong_hits, _ = _scan_text_score(text)
+    confident = len(strong_hits) >= 2 or score >= _SCAN_SCORE_CONFIDENT
+    return {'score': score, 'confident': confident}
+
+
+def _is_invoice_pdf(pdf_path, mode='balanced'):
+    qr_fields, qr_confident = _scan_with_qr(pdf_path, mode=mode)
+    if qr_confident:
+        return True
+
+    text_result = _scan_with_text(pdf_path, mode=mode)
+    if text_result['confident']:
+        return True
+
+    allow_light_ocr = mode != 'fast'
+    if allow_light_ocr and text_result['low_confidence']:
+        ocr_result = _scan_with_light_ocr(pdf_path)
+        if ocr_result['confident']:
+            return True
+
+    # QR 有部分字段时，放宽为候选发票（降低漏判）
+    if mode in ('balanced', 'accurate') and (qr_fields.get('invoice_no') or qr_fields.get('total') is not None):
+        return True
+
+    return False
+
+def _scan_one_pdf(args):
+    pdf_path, mode = args
+    return pdf_path, _is_invoice_pdf(pdf_path, mode=mode)
+
+
+def scan_folder_for_invoices(folder_path, mode='balanced'):
     """递归扫描目录，返回所有 PDF 中属于发票的路径列表"""
-    invoices = []
-    non_invoices = []
-    for root, _dirs, files in os.walk(folder_path):
+    if mode not in _SCAN_MODE_SET:
+        mode = 'balanced'
+
+    pdf_paths = []
+    for root, dirs, files in os.walk(folder_path):
+        dirs.sort()
         for fname in sorted(files):
             if fname.lower().endswith('.pdf') and not fname.startswith('.'):
-                full_path = os.path.join(root, fname)
-                if _is_invoice_pdf(full_path):
+                pdf_paths.append(os.path.join(root, fname))
+
+    invoices = []
+    non_invoices = []
+
+    # fast 模式只做扫码+文本，允许并发以显著提速
+    if mode == 'fast' and pdf_paths:
+        workers = min(8, max(2, os.cpu_count() or 2))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for full_path, is_invoice in ex.map(_scan_one_pdf, [(p, mode) for p in pdf_paths]):
+                if is_invoice:
                     invoices.append(full_path)
                 else:
                     non_invoices.append(full_path)
-    return {'total': len(invoices) + len(non_invoices), 'invoices': invoices, 'non_invoices': non_invoices}
+    else:
+        for full_path in pdf_paths:
+            if _is_invoice_pdf(full_path, mode=mode):
+                invoices.append(full_path)
+            else:
+                non_invoices.append(full_path)
+
+    return {'total': len(pdf_paths), 'invoices': invoices, 'non_invoices': non_invoices}
 
 
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == '--scan':
         folder = sys.argv[2]
+        mode = 'balanced'
+        if '--mode' in sys.argv:
+            mode_idx = sys.argv.index('--mode')
+            if mode_idx + 1 < len(sys.argv):
+                mode = sys.argv[mode_idx + 1].strip().lower()
+
         if not os.path.isdir(folder):
             print(json.dumps({'error': f'目录不存在: {folder}'}))
             sys.exit(1)
-        result = scan_folder_for_invoices(folder)
+        if mode not in _SCAN_MODE_SET:
+            print(json.dumps({'error': f'不支持的扫描模式: {mode}'}))
+            sys.exit(1)
+        result = scan_folder_for_invoices(folder, mode=mode)
         print(json.dumps(result, ensure_ascii=False))
         return
 

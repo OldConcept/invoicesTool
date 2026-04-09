@@ -11,9 +11,11 @@ const api = {
   ): Promise<{ success: boolean; imported: number; skipped: number }> =>
     ipcRenderer.invoke('import-folder', folderPath),
   scanFolder: (
-    folderPath: string
+    folderPath: string,
+    mode?: 'fast' | 'balanced' | 'accurate'
   ): Promise<{ total: number; invoices: string[]; non_invoices: string[] }> =>
-    ipcRenderer.invoke('scan-folder', folderPath),
+    ipcRenderer.invoke('scan-folder', folderPath, mode),
+  cancelScan: (): Promise<{ success: boolean }> => ipcRenderer.invoke('cancel-scan'),
   getPdfData: (filePath: string): Promise<string> => ipcRenderer.invoke('get-pdf-data', filePath),
 
   // 发票 CRUD

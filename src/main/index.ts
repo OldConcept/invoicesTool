@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import path from 'path'
 import { initDb, getDb, saveDb } from './handlers/dbHandler'
 import { importPdfs, importFolder, getPdfBase64, deletePdfFiles } from './handlers/fileHandler'
-import { runOcr, scanFolder, setPythonPath, stopOcrProcess } from './handlers/ocrHandler'
+import { runOcr, scanFolder, setPythonPath, stopOcrProcess, cancelScanProcess } from './handlers/ocrHandler'
 import { exportReport, exportZip } from './handlers/exportHandler'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -41,6 +41,7 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   stopOcrProcess()
+  cancelScanProcess()
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -175,12 +176,16 @@ function registerIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle('scan-folder', async (_event, folderPath: string) => {
+  ipcMain.handle('scan-folder', async (_event, folderPath: string, mode?: 'fast' | 'balanced' | 'accurate') => {
     const db = getDb()
     const result = db.exec("SELECT value FROM settings WHERE key = 'pythonPath'")
     const pythonPath =
       result.length && result[0].values.length ? (result[0].values[0][0] as string) : 'python3'
-    return scanFolder(folderPath, pythonPath)
+    return scanFolder(folderPath, pythonPath, mode || 'fast')
+  })
+  ipcMain.handle('cancel-scan', () => {
+    cancelScanProcess()
+    return { success: true }
   })
 
   // OCR

@@ -58,7 +58,7 @@ export default function FolderScanModal({
             <div className="flex flex-col items-center gap-3 py-8">
               <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
               <p className="text-sm text-gray-500">正在递归扫描 PDF 文件...</p>
-              <p className="text-xs text-gray-400">使用文本提取快速识别发票，无需 AI</p>
+              <p className="text-xs text-gray-400">极速模式：优先扫码 + 文本提取（不跑 AI）</p>
             </div>
           )}
 

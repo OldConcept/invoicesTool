@@ -19,6 +19,9 @@ let ready = false
 let buffer = ''
 const pending = new Map<string, PendingResolver>()
 let reqCounter = 0
+let scanChild: ChildProcessWithoutNullStreams | null = null
+let scanTimer: NodeJS.Timeout | null = null
+let scanCancelled = false
 
 function startProcess(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -129,30 +132,74 @@ export function stopOcrProcess(): void {
   }
 }
 
+export function cancelScanProcess(): void {
+  if (!scanChild) return
+  scanCancelled = true
+  scanChild.kill()
+}
+
 export function scanFolder(
   folderPath: string,
-  pythonPath: string = 'python3'
+  pythonPath: string = 'python3',
+  mode: 'fast' | 'balanced' | 'accurate' = 'fast'
 ): Promise<{ total: number; invoices: string[]; non_invoices: string[] }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(pythonPath, [SCRIPT_PATH, '--scan', folderPath], {
+    if (scanChild) {
+      reject(new Error('已有扫描任务正在运行'))
+      return
+    }
+
+    const child = spawn(pythonPath, [SCRIPT_PATH, '--scan', folderPath, '--mode', mode], {
       env: { ...process.env, PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: 'True' }
     })
+    scanChild = child
+    scanCancelled = false
+
+    let settled = false
     let stdout = ''
     let stderr = ''
+    const finish = (): void => {
+      if (scanChild === child) scanChild = null
+      if (scanTimer) {
+        clearTimeout(scanTimer)
+        scanTimer = null
+      }
+      scanCancelled = false
+    }
+    const fail = (message: string): void => {
+      if (settled) return
+      settled = true
+      finish()
+      reject(new Error(message))
+    }
+
     child.stdout.on('data', (d: Buffer) => (stdout += d.toString()))
     child.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
     child.on('close', (code) => {
+      if (settled) return
+      if (scanCancelled) {
+        fail('扫描已取消')
+        return
+      }
       try {
         const result = JSON.parse(stdout.trim())
-        if (result.error) reject(new Error(result.error))
-        else resolve(result)
+        if (result.error) {
+          fail(result.error)
+          return
+        }
+        settled = true
+        finish()
+        resolve(result)
       } catch {
-        reject(new Error(stderr || `scan exited with code ${code}`))
+        fail(stderr || `scan exited with code ${code}`)
       }
     })
-    child.on('error', reject)
-    // Allow up to 2 minutes for large directories
-    setTimeout(() => reject(new Error('扫描超时（120s）')), 120_000)
+    child.on('error', (err) => fail(err.message))
+    // Allow more time for large directories and fallback OCR
+    scanTimer = setTimeout(() => {
+      if (scanChild === child) child.kill()
+      fail('扫描超时（300s）')
+    }, 300_000)
   })
 }
 

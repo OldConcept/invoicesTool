@@ -21,6 +21,13 @@
     "files": [
       "out/**"
     ],
+    "extraResources": [
+      {
+        "from": "scripts",
+        "to": "scripts",
+        "filter": ["**/*"]
+      }
+    ],
     "mac": {
       "target": [
         {

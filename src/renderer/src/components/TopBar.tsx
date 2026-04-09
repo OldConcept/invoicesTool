@@ -32,7 +32,7 @@ export default function TopBar(): React.JSX.Element {
     if (!folder) return
     setScanState({ stage: 'scanning', folder })
     try {
-      const result = await window.api.scanFolder(folder)
+      const result = await window.api.scanFolder(folder, 'fast')
       setScanState({ stage: 'ready', folder, result })
     } catch (e) {
       setScanState({ stage: 'error', folder, error: e instanceof Error ? e.message : String(e) })
@@ -49,7 +49,14 @@ export default function TopBar(): React.JSX.Element {
     alert(`导入完成：新增 ${importResult.imported} 张，跳过重复 ${importResult.skipped} 张`)
   }
 
-  function handleScanCancel(): void {
+  async function handleScanCancel(): Promise<void> {
+    if (scanState.stage === 'scanning') {
+      try {
+        await window.api.cancelScan()
+      } catch {
+        // ignore cancel failures and close modal anyway
+      }
+    }
     setScanState({ stage: 'idle' })
   }
 
