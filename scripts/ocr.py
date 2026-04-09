@@ -118,6 +118,11 @@ def parse_invoice_qr(qr_text):
             if amt is not None and amt > 0:
                 result['amount'] = amt
 
+        if result.get('total') is not None and result.get('amount') is not None:
+            tax = round(result['total'] - result['amount'], 2)
+            if tax >= 0:
+                result['tax'] = tax
+
     return result
 
 
@@ -207,6 +212,25 @@ def run_ocr(images):
 def extract_fields(lines):
     text = '\n'.join(lines)
 
+    def _extract_line_money_values(line):
+        values = []
+        for raw in re.findall(r'(?<!\d)(\d[\d,，]*\.\d{1,2})(?!\d)', line):
+            money = parse_money(raw)
+            if money is not None:
+                values.append(money)
+        return values
+
+    def _parse_date_candidate(line):
+        line = line.strip()
+        for pat in [
+            r'(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})',
+            r'(\d{4})(\d{2})(\d{2})',
+        ]:
+            m = re.search(pat, line)
+            if m:
+                return f'{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}'
+        return None
+
     # 发票号码
     invoice_no = None
     for pat in [
@@ -219,6 +243,30 @@ def extract_fields(lines):
             invoice_no = m.group(1)
             break
 
+    # 标签和值分离：发票号码在后续独立一行
+    if invoice_no is None:
+        for idx, line in enumerate(lines):
+            if '发票号码' not in line and '票号' not in line:
+                continue
+            for j in range(idx + 1, min(idx + 4, len(lines))):
+                candidate = lines[j].strip()
+                if re.fullmatch(r'\d{8,20}', candidate):
+                    invoice_no = candidate
+                    break
+            if invoice_no is not None:
+                break
+
+    # 兜底：独立长数字行，且附近出现过"发票号码"
+    if invoice_no is None:
+        label_positions = [i for i, line in enumerate(lines) if '发票号码' in line or '票号' in line]
+        for idx, line in enumerate(lines):
+            candidate = line.strip()
+            if not re.fullmatch(r'\d{8,20}', candidate):
+                continue
+            if any(abs(idx - pos) <= 4 for pos in label_positions):
+                invoice_no = candidate
+                break
+
     # 开票日期
     date = None
     for pat in [
@@ -230,6 +278,28 @@ def extract_fields(lines):
         if m:
             date = f'{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}'
             break
+
+    # 票号/日期分离布局：独立数字行旁边有日期，且靠近页头标签区
+    if invoice_no is None:
+        label_positions = [i for i, line in enumerate(lines) if '发票号码' in line or '开票日期' in line or '票号' in line]
+        for idx, line in enumerate(lines):
+            candidate = line.strip()
+            if not re.fullmatch(r'\d{8,20}', candidate):
+                continue
+
+            nearby_dates = []
+            for j in range(max(0, idx - 2), min(len(lines), idx + 3)):
+                if j == idx:
+                    continue
+                parsed = _parse_date_candidate(lines[j])
+                if parsed:
+                    nearby_dates.append(parsed)
+
+            if nearby_dates and any(abs(idx - pos) <= 40 for pos in label_positions):
+                invoice_no = candidate
+                if date is None:
+                    date = nearby_dates[0]
+                break
 
     # ── 销售方名称 & 税号 ────────────────────────────────────────────────────
     # 发票布局分三类：
@@ -364,24 +434,89 @@ def extract_fields(lines):
         if m:
             tax = parse_money(m.group(1))
 
+    # 常见电子发票汇总行：合计 123.45 7.41
+    if amount is None or tax is None:
+        for line in lines:
+            normalized = line.replace('　', ' ').strip()
+            if '价税合计' in normalized:
+                continue
+            if '合计' not in normalized:
+                continue
+            nums = _extract_line_money_values(normalized)
+            if len(nums) >= 2:
+                cand_amount, cand_tax = nums[-2], nums[-1]
+                if cand_amount >= cand_tax:
+                    if amount is None:
+                        amount = cand_amount
+                    if tax is None:
+                        tax = cand_tax
+                    break
+
+    # 邻近标签布局：金额 / 税额 分行或同行出现
+    if amount is None or tax is None:
+        for idx, line in enumerate(lines):
+            window = ' '.join(lines[idx: idx + 3])
+
+            if amount is None and ('金额' in line or '金额' in window):
+                nums = _extract_line_money_values(window)
+                if nums:
+                    amount = nums[0]
+
+            if tax is None and ('税额' in line or '增值税额' in line or '税额' in window):
+                nums = _extract_line_money_values(window)
+                if nums:
+                    tax = nums[-1]
+
     # 兜底：从带货币符号的值中推断 amount/tax/total（适配分行表格票）
     currency_vals = []
+    plain_money_vals = []
     for line in lines:
+        plain_money_vals.extend(_extract_line_money_values(line))
         for raw in re.findall(r'[¥￥]\s*([\d,，]+(?:\.\d{1,2})?)', line):
             money = parse_money(raw)
             if money is not None:
                 currency_vals.append(money)
 
-    if currency_vals:
+    money_candidates = currency_vals[:] if currency_vals else []
+    if plain_money_vals:
+        seen = set(money_candidates)
+        for value in plain_money_vals:
+            if value not in seen:
+                money_candidates.append(value)
+                seen.add(value)
+
+    if money_candidates:
         inferred_amount = inferred_tax = inferred_total = None
-        if len(currency_vals) >= 3:
-            for i in range(len(currency_vals) - 2):
-                a, t, tot = currency_vals[i], currency_vals[i + 1], currency_vals[i + 2]
+        if len(money_candidates) >= 3:
+            for i in range(len(money_candidates) - 2):
+                a, t, tot = money_candidates[i], money_candidates[i + 1], money_candidates[i + 2]
                 if t <= tot and a <= tot and abs((a + t) - tot) <= 0.05:
                     inferred_amount, inferred_tax, inferred_total = a, t, tot
                     break
+
+        # 已有 total 时，再尝试从所有货币值里找一对 amount + tax = total
+        if total is not None and (amount is None or tax is None):
+            pair_candidates = []
+            for i in range(len(money_candidates)):
+                for j in range(i + 1, len(money_candidates)):
+                    x, y = money_candidates[i], money_candidates[j]
+                    if x > total or y > total:
+                        continue
+                    diff = abs((x + y) - total)
+                    if diff <= 0.05:
+                        cand_amount, cand_tax = max(x, y), min(x, y)
+                        pair_candidates.append((diff, cand_amount, cand_tax))
+
+            if pair_candidates:
+                pair_candidates.sort(key=lambda item: (item[0], -item[1], item[2]))
+                _, pair_amount, pair_tax = pair_candidates[0]
+                if amount is None:
+                    amount = pair_amount
+                if tax is None:
+                    tax = pair_tax
+
         if inferred_total is None:
-            inferred_total = max(currency_vals)
+            inferred_total = max(money_candidates)
 
         if amount is None and inferred_amount is not None:
             amount = inferred_amount
@@ -392,6 +527,10 @@ def extract_fields(lines):
 
     if total and tax and not amount:
         amount = round(total - tax, 2)
+    if total is not None and amount is not None and tax is None:
+        inferred_tax = round(total - amount, 2)
+        if inferred_tax >= 0:
+            tax = inferred_tax
 
     if total is not None and tax is not None and tax > total:
         tax = None
@@ -463,10 +602,10 @@ def process(pdf_path):
         sources.append('ocr')
 
     # ── 合并：QR 字段优先（最可靠），其余用文本/OCR 补充 ──────────────────
-    # QR 提供：invoice_no、total、date、amount
+    # QR 提供：invoice_no、total、date、amount、tax
     # 文本/OCR 提供：vendor、tax、category、invoice_type（及 QR 没有的字段）
     result = text_fields.copy()
-    for key in ('invoice_no', 'total', 'date', 'amount'):
+    for key in ('invoice_no', 'total', 'date', 'amount', 'tax'):
         if qr_fields.get(key) is not None:
             result[key] = qr_fields[key]
 

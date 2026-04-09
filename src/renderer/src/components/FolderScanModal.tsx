@@ -1,4 +1,5 @@
-import React from 'react'
+import React, { useState } from 'react'
+import { Project } from '../types/invoice'
 
 type ScanResult = {
   total: number
@@ -24,6 +25,10 @@ interface Props {
   importProgress?: ImportProgress | null
   result: ScanResult | null
   error: string | null
+  projects: Project[]
+  selectedProjectTag: string
+  onProjectChange: (projectTag: string) => void
+  onCreateProject: (name: string, color: string) => Promise<void>
   onConfirm: () => void
   onCancel: () => void
 }
@@ -35,9 +40,16 @@ export default function FolderScanModal({
   importProgress = null,
   result,
   error,
+  projects,
+  selectedProjectTag,
+  onProjectChange,
+  onCreateProject,
   onConfirm,
   onCancel
 }: Props): React.JSX.Element {
+  const [newProjectName, setNewProjectName] = useState('')
+  const [newProjectColor, setNewProjectColor] = useState('#3B82F6')
+  const [creating, setCreating] = useState(false)
   const folderName = folderPath.split('/').pop() || folderPath
   const importPercent =
     importProgress && importProgress.total > 0
@@ -53,6 +65,19 @@ export default function FolderScanModal({
         : importProgress?.phase === 'done'
           ? '导入完成'
           : '处理中...'
+
+  async function handleCreateProject(): Promise<void> {
+    const name = newProjectName.trim()
+    if (!name) return
+    setCreating(true)
+    try {
+      await onCreateProject(name, newProjectColor)
+      onProjectChange(name)
+      setNewProjectName('')
+    } finally {
+      setCreating(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
@@ -140,6 +165,46 @@ export default function FolderScanModal({
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
                   <div className="text-xl font-bold text-gray-400">{result.non_invoices.length}</div>
                   <div className="text-xs text-gray-400 mt-0.5">非发票跳过</div>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-medium text-gray-500 mb-1.5">导入后绑定项目</p>
+                <select
+                  value={selectedProjectTag}
+                  onChange={(e) => onProjectChange(e.target.value)}
+                  disabled={importing}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+                >
+                  <option value="">不绑定项目</option>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.name}>{project.name}</option>
+                  ))}
+                </select>
+                <div className="flex gap-2 mt-2">
+                  <input
+                    type="text"
+                    value={newProjectName}
+                    onChange={(e) => setNewProjectName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && void handleCreateProject()}
+                    disabled={importing}
+                    placeholder="新增项目并选中"
+                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+                  />
+                  <input
+                    type="color"
+                    value={newProjectColor}
+                    onChange={(e) => setNewProjectColor(e.target.value)}
+                    disabled={importing}
+                    className="w-10 h-10 border border-gray-200 rounded-lg cursor-pointer disabled:opacity-60"
+                  />
+                  <button
+                    onClick={() => void handleCreateProject()}
+                    disabled={importing || creating || !newProjectName.trim()}
+                    className="px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+                  >
+                    {creating ? '新增中...' : '新增'}
+                  </button>
                 </div>
               </div>
 

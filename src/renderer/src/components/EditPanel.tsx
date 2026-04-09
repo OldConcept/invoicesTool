@@ -38,7 +38,7 @@ function invoiceToForm(inv: Invoice): FormState {
 }
 
 export default function EditPanel(): React.JSX.Element {
-  const { invoices, activeInvoiceId, updateInvoice, runOcr, ocrLoading, projects } = useInvoiceStore()
+  const { invoices, activeInvoiceId, updateInvoice, runOcr, ocrLoading, projects, loadInvoices } = useInvoiceStore()
   const invoice = invoices.find((i) => i.id === activeInvoiceId) || null
 
   const [form, setForm] = useState<FormState | null>(null)
@@ -145,6 +145,7 @@ export default function EditPanel(): React.JSX.Element {
     try {
       const result = await window.api.importInvoiceAttachments(invoice.id, paths)
       await reloadAttachments(invoice.id)
+      await loadInvoices()
       alert(`已添加 ${result.imported} 份行程单，跳过重复 ${result.skipped} 份`)
     } catch (error) {
       alert(`添加行程单失败: ${error instanceof Error ? error.message : String(error)}`)
@@ -161,6 +162,7 @@ export default function EditPanel(): React.JSX.Element {
     try {
       await window.api.deleteInvoiceAttachment(attachment.id)
       await reloadAttachments(invoice.id)
+      await loadInvoices()
     } catch (error) {
       alert(`移除失败: ${error instanceof Error ? error.message : String(error)}`)
     } finally {

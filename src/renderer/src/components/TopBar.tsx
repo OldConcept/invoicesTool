@@ -4,6 +4,7 @@ import SettingsModal from './SettingsModal'
 import ReportModal from './ReportModal'
 import FolderScanModal from './FolderScanModal'
 import TripItineraryReviewModal from './TripItineraryReviewModal'
+import ImportProjectModal from './ImportProjectModal'
 import { UnmatchedTripItinerary } from '../types/invoice'
 
 type ScanState =
@@ -32,13 +33,15 @@ type ImportProgress = {
 }
 
 export default function TopBar(): React.JSX.Element {
-  const { selectedIds, deleteSelected, loadInvoices, clearSelection, runOcrBatch, batchOcrProgress } = useInvoiceStore()
+  const { selectedIds, deleteSelected, loadInvoices, clearSelection, runOcrBatch, batchOcrProgress, projects, loadProjects } = useInvoiceStore()
   const [showSettings, setShowSettings] = useState(false)
   const [showReport, setShowReport] = useState(false)
   const [scanState, setScanState] = useState<ScanState>({ stage: 'idle' })
   const [showAdvancedActions, setShowAdvancedActions] = useState(false)
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
   const [unmatchedTripItems, setUnmatchedTripItems] = useState<UnmatchedTripItinerary[]>([])
+  const [pendingImportPaths, setPendingImportPaths] = useState<string[] | null>(null)
+  const [batchProjectTag, setBatchProjectTag] = useState('')
 
   useEffect(() => {
     if (selectedIds.size === 0) {
@@ -56,9 +59,13 @@ export default function TopBar(): React.JSX.Element {
   async function handleImport(): Promise<void> {
     const paths = await window.api.selectPdfFiles()
     if (!paths.length) return
+    setPendingImportPaths(paths)
+  }
+
+  async function startImport(paths: string[], projectTag: string | null): Promise<void> {
     setImportProgress({ phase: 'import', done: 0, total: paths.length, imported: 0, skipped: 0, ocrProcessed: 0, ocrFailed: 0 })
     try {
-      const result = await window.api.importPdfs(paths)
+      const result = await window.api.importPdfs(paths, projectTag)
       await loadInvoices()
       if (result.imported > 0 || result.skipped > 0) {
         alert(
@@ -68,12 +75,14 @@ export default function TopBar(): React.JSX.Element {
       }
     } finally {
       setImportProgress(null)
+      setPendingImportPaths(null)
     }
   }
 
   async function handleImportFolder(): Promise<void> {
     const folder = await window.api.selectFolder()
     if (!folder) return
+    setBatchProjectTag('')
     setScanState({ stage: 'scanning', folder })
     try {
       const result = await window.api.scanFolder(folder, 'fast')
@@ -97,9 +106,14 @@ export default function TopBar(): React.JSX.Element {
       ocrFailed: 0
     })
     try {
-      const importResult = await window.api.importBatchFiles(result.invoices, result.trip_itineraries)
+      const importResult = await window.api.importBatchFiles(
+        result.invoices,
+        result.trip_itineraries,
+        batchProjectTag || null
+      )
       await loadInvoices()
       setScanState({ stage: 'idle' })
+      setBatchProjectTag('')
       setUnmatchedTripItems((importResult.unmatchedDetails || []) as UnmatchedTripItinerary[])
       alert(
         `导入完成：新增 ${importResult.imported} 张，跳过重复 ${importResult.skipped} 张\n` +
@@ -121,6 +135,7 @@ export default function TopBar(): React.JSX.Element {
         // ignore cancel failures and close modal anyway
       }
     }
+    setBatchProjectTag('')
     setScanState({ stage: 'idle' })
   }
 
@@ -136,6 +151,11 @@ export default function TopBar(): React.JSX.Element {
     if (result.imported === 0 && result.skipped > 0) {
       alert('这份行程单已绑定或已存在，已跳过重复导入。')
     }
+  }
+
+  async function handleCreateProject(name: string, color: string): Promise<void> {
+    await window.api.createProject(name, color)
+    await loadProjects()
   }
 
   return (
@@ -289,6 +309,17 @@ export default function TopBar(): React.JSX.Element {
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
       {showReport && <ReportModal onClose={() => setShowReport(false)} />}
+      {pendingImportPaths && (
+        <ImportProjectModal
+          count={pendingImportPaths.length}
+          projects={projects}
+          onCreateProject={handleCreateProject}
+          onClose={() => setPendingImportPaths(null)}
+          onConfirm={(projectTag) => {
+            void startImport(pendingImportPaths, projectTag)
+          }}
+        />
+      )}
       {unmatchedTripItems.length > 0 && (
         <TripItineraryReviewModal
           items={unmatchedTripItems}
@@ -304,6 +335,10 @@ export default function TopBar(): React.JSX.Element {
           importProgress={importProgress}
           result={scanState.stage === 'ready' || scanState.stage === 'importing' ? scanState.result : null}
           error={scanState.stage === 'error' ? scanState.error : null}
+          projects={projects}
+          selectedProjectTag={batchProjectTag}
+          onProjectChange={setBatchProjectTag}
+          onCreateProject={handleCreateProject}
           onConfirm={handleScanConfirm}
           onCancel={handleScanCancel}
         />

@@ -63,6 +63,22 @@ function toNullableNumber(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
+function getConfiguredPythonPath(): string {
+  const db = getDb()
+  const result = db.exec("SELECT value FROM settings WHERE key = 'pythonPath'")
+  if (!result.length || !result[0].values.length) {
+    return 'python3'
+  }
+
+  const raw = result[0].values[0][0]
+  if (typeof raw !== 'string') {
+    return 'python3'
+  }
+
+  const normalized = raw.trim()
+  return normalized || 'python3'
+}
+
 type ImportProgressPayload = {
   phase: 'import' | 'ocr' | 'attachment' | 'done'
   done: number
@@ -461,14 +477,15 @@ async function autoImportTripItineraries(
 async function runInvoiceImportPipeline(
   event: Electron.IpcMainInvokeEvent,
   invoicePaths: string[],
-  tripItineraryPaths: string[] = []
+  tripItineraryPaths: string[] = [],
+  projectTag?: string | null
 ): Promise<BatchImportResult> {
   let importSnapshot = { done: 0, total: 0, imported: 0, skipped: 0 }
   const emit = (payload: ImportProgressPayload): void => {
     event.sender.send('import-progress', payload)
   }
 
-  const result = importPdfs(invoicePaths, (p) => {
+  const result = importPdfs(invoicePaths, projectTag, (p) => {
     importSnapshot = p
     emit({
       phase: 'import',
@@ -481,12 +498,7 @@ async function runInvoiceImportPipeline(
     })
   })
 
-  const db = getDb()
-  const settingResult = db.exec("SELECT value FROM settings WHERE key = 'pythonPath'")
-  const pythonPath =
-    settingResult.length && settingResult[0].values.length
-      ? (settingResult[0].values[0][0] as string)
-      : 'python3'
+  const pythonPath = getConfiguredPythonPath()
 
   const ocr = await autoOcrImportedItems(result.importedItems, pythonPath, (p) => {
     emit({
@@ -557,8 +569,8 @@ function registerIpcHandlers(): void {
     return result.filePaths[0] || null
   })
 
-  ipcMain.handle('import-pdfs', async (event, paths: string[]) => {
-    const pipelineResult = await runInvoiceImportPipeline(event, paths)
+  ipcMain.handle('import-pdfs', async (event, paths: string[], projectTag?: string | null) => {
+    const pipelineResult = await runInvoiceImportPipeline(event, paths, [], projectTag)
     return {
       success: pipelineResult.success,
       imported: pipelineResult.imported,
@@ -568,13 +580,13 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('import-folder', async (event, folderPath: string) => {
+  ipcMain.handle('import-folder', async (event, folderPath: string, projectTag?: string | null) => {
     let importSnapshot = { done: 0, total: 0, imported: 0, skipped: 0 }
     const emit = (payload: ImportProgressPayload): void => {
       event.sender.send('import-progress', payload)
     }
 
-    const result = importFolder(folderPath, (p) => {
+    const result = importFolder(folderPath, projectTag, (p) => {
       importSnapshot = p
       emit({
         phase: 'import',
@@ -586,12 +598,7 @@ function registerIpcHandlers(): void {
         ocrFailed: 0
       })
     })
-    const db = getDb()
-    const settingResult = db.exec("SELECT value FROM settings WHERE key = 'pythonPath'")
-    const pythonPath =
-      settingResult.length && settingResult[0].values.length
-        ? (settingResult[0].values[0][0] as string)
-        : 'python3'
+    const pythonPath = getConfiguredPythonPath()
     const ocr = await autoOcrImportedItems(result.importedItems, pythonPath, (p) => {
       emit({
         phase: 'ocr',
@@ -615,9 +622,12 @@ function registerIpcHandlers(): void {
     return { success: true, imported: result.imported, skipped: result.skipped, ...ocr }
   })
 
-  ipcMain.handle('import-batch-files', async (event, invoicePaths: string[], tripItineraryPaths: string[]) => {
-    return runInvoiceImportPipeline(event, invoicePaths, tripItineraryPaths)
-  })
+  ipcMain.handle(
+    'import-batch-files',
+    async (event, invoicePaths: string[], tripItineraryPaths: string[], projectTag?: string | null) => {
+      return runInvoiceImportPipeline(event, invoicePaths, tripItineraryPaths, projectTag)
+    }
+  )
 
   ipcMain.handle('get-pdf-data', (_event, filePath: string) => {
     return getPdfBase64(filePath)
@@ -742,10 +752,7 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('scan-folder', async (_event, folderPath: string, mode?: 'fast' | 'balanced' | 'accurate') => {
-    const db = getDb()
-    const result = db.exec("SELECT value FROM settings WHERE key = 'pythonPath'")
-    const pythonPath =
-      result.length && result[0].values.length ? (result[0].values[0][0] as string) : 'python3'
+    const pythonPath = getConfiguredPythonPath()
     return scanFolder(folderPath, pythonPath, mode || 'fast')
   })
   ipcMain.handle('cancel-scan', () => {
@@ -755,10 +762,7 @@ function registerIpcHandlers(): void {
 
   // OCR
   ipcMain.handle('run-ocr', async (_event, filePath: string) => {
-    const db = getDb()
-    const result = db.exec("SELECT value FROM settings WHERE key = 'pythonPath'")
-    const pythonPath =
-      result.length && result[0].values.length ? (result[0].values[0][0] as string) : 'python3'
+    const pythonPath = getConfiguredPythonPath()
     return runOcr(filePath, pythonPath)
   })
 

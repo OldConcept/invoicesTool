@@ -63,6 +63,7 @@ function escapeSql(value: string): string {
 
 export function importPdfs(
   srcPaths: string[],
+  projectTag?: string | null,
   onProgress?: (progress: ImportStageProgress) => void
 ): ImportResult {
   const db = getDb()
@@ -94,11 +95,12 @@ export function importPdfs(
 
       const originalName = path.basename(srcPath, '.pdf')
       const now = new Date().toISOString()
+      const normalizedProjectTag = projectTag?.trim() ? projectTag.trim() : null
 
       db.run(
-        `INSERT INTO invoices (id, file_path, file_hash, vendor, category, created_at)
-         VALUES (?, ?, ?, ?, '餐饮外卖', ?)`,
-        [id, destPath, hash, originalName, now]
+        `INSERT INTO invoices (id, file_path, file_hash, vendor, category, project_tag, created_at)
+         VALUES (?, ?, ?, ?, '餐饮外卖', ?, ?)`,
+        [id, destPath, hash, originalName, normalizedProjectTag, now]
       )
 
       imported++
@@ -116,13 +118,14 @@ export function importPdfs(
 
 export function importFolder(
   folderPath: string,
+  projectTag?: string | null,
   onProgress?: (progress: ImportStageProgress) => void
 ): ImportResult {
   const files = fs.readdirSync(folderPath)
   const pdfPaths = files
     .filter((f) => isPdf(f))
     .map((f) => path.join(folderPath, f))
-  return importPdfs(pdfPaths, onProgress)
+  return importPdfs(pdfPaths, projectTag, onProgress)
 }
 
 export function getPdfBase64(filePath: string): string {

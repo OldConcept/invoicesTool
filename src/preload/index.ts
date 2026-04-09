@@ -15,13 +15,15 @@ const api = {
   selectPdfFiles: (): Promise<string[]> => ipcRenderer.invoke('select-pdf-files'),
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke('select-folder'),
   importPdfs: (
-    paths: string[]
+    paths: string[],
+    projectTag?: string | null
   ): Promise<{ success: boolean; imported: number; skipped: number; ocrProcessed: number; ocrFailed: number }> =>
-    ipcRenderer.invoke('import-pdfs', paths),
+    ipcRenderer.invoke('import-pdfs', paths, projectTag),
   importFolder: (
-    folderPath: string
+    folderPath: string,
+    projectTag?: string | null
   ): Promise<{ success: boolean; imported: number; skipped: number; ocrProcessed: number; ocrFailed: number }> =>
-    ipcRenderer.invoke('import-folder', folderPath),
+    ipcRenderer.invoke('import-folder', folderPath, projectTag),
   onImportProgress: (callback: (progress: ImportProgressPayload) => void): (() => void) => {
     const listener = (_event: unknown, payload: ImportProgressPayload): void => callback(payload)
     ipcRenderer.on('import-progress', listener)
@@ -34,7 +36,8 @@ const api = {
     ipcRenderer.invoke('scan-folder', folderPath, mode),
   importBatchFiles: (
     invoicePaths: string[],
-    tripItineraryPaths: string[]
+    tripItineraryPaths: string[],
+    projectTag?: string | null
   ): Promise<{
     success: boolean
     imported: number
@@ -59,7 +62,7 @@ const api = {
         score: number
       }>
     }>
-  }> => ipcRenderer.invoke('import-batch-files', invoicePaths, tripItineraryPaths),
+  }> => ipcRenderer.invoke('import-batch-files', invoicePaths, tripItineraryPaths, projectTag),
   cancelScan: (): Promise<{ success: boolean }> => ipcRenderer.invoke('cancel-scan'),
   getPdfData: (filePath: string): Promise<string> => ipcRenderer.invoke('get-pdf-data', filePath),
   getInvoiceAttachments: (invoiceId: string) => ipcRenderer.invoke('get-invoice-attachments', invoiceId),
