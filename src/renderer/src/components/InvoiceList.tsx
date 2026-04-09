@@ -24,6 +24,12 @@ function InvoiceCard({
 }): React.JSX.Element {
   const { ocrLoading, runOcr } = useInvoiceStore()
   const isOcrLoading = ocrLoading.has(invoice.id)
+  const vendor = (invoice.vendor || '').toLowerCase()
+  const isTaxiInvoice =
+    invoice.category === '打车' ||
+    invoice.invoiceType === '出租车票' ||
+    ['滴滴', '美团', '高德', '曹操', 't3', '首汽', '嘀嗒'].some((keyword) => vendor.includes(keyword))
+  const attachmentCount = typeof invoice.attachmentCount === 'number' ? invoice.attachmentCount : 0
 
   return (
     <div
@@ -72,6 +78,17 @@ function InvoiceCard({
             >
               {invoice.category}
             </span>
+            {isTaxiInvoice && (
+              <span
+                className={`text-xs px-1.5 py-0.5 rounded ${
+                  attachmentCount > 0
+                    ? 'bg-cyan-100 text-cyan-700'
+                    : 'bg-amber-100 text-amber-700'
+                }`}
+              >
+                {attachmentCount > 0 ? `已绑行程单 ${attachmentCount}` : '未绑行程单'}
+              </span>
+            )}
             {invoice.projectTag && (
               <span className="text-xs text-gray-400 truncate">#{invoice.projectTag}</span>
             )}

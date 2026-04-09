@@ -142,7 +142,7 @@ export function scanFolder(
   folderPath: string,
   pythonPath: string = 'python3',
   mode: 'fast' | 'balanced' | 'accurate' = 'fast'
-): Promise<{ total: number; invoices: string[]; non_invoices: string[] }> {
+): Promise<{ total: number; invoices: string[]; trip_itineraries: string[]; non_invoices: string[] }> {
   return new Promise((resolve, reject) => {
     if (scanChild) {
       reject(new Error('已有扫描任务正在运行'))

@@ -3,16 +3,26 @@ import { useInvoiceStore } from '../stores/invoiceStore'
 import SettingsModal from './SettingsModal'
 import ReportModal from './ReportModal'
 import FolderScanModal from './FolderScanModal'
+import TripItineraryReviewModal from './TripItineraryReviewModal'
+import { UnmatchedTripItinerary } from '../types/invoice'
 
 type ScanState =
   | { stage: 'idle' }
   | { stage: 'scanning'; folder: string }
-  | { stage: 'ready'; folder: string; result: { total: number; invoices: string[]; non_invoices: string[] } }
+  | {
+      stage: 'ready'
+      folder: string
+      result: { total: number; invoices: string[]; trip_itineraries: string[]; non_invoices: string[] }
+    }
   | { stage: 'error'; folder: string; error: string }
-  | { stage: 'importing'; folder: string; result: { total: number; invoices: string[]; non_invoices: string[] } }
+  | {
+      stage: 'importing'
+      folder: string
+      result: { total: number; invoices: string[]; trip_itineraries: string[]; non_invoices: string[] }
+    }
 
 type ImportProgress = {
-  phase: 'import' | 'ocr' | 'done'
+  phase: 'import' | 'ocr' | 'attachment' | 'done'
   done: number
   total: number
   imported: number
@@ -28,6 +38,7 @@ export default function TopBar(): React.JSX.Element {
   const [scanState, setScanState] = useState<ScanState>({ stage: 'idle' })
   const [showAdvancedActions, setShowAdvancedActions] = useState(false)
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
+  const [unmatchedTripItems, setUnmatchedTripItems] = useState<UnmatchedTripItinerary[]>([])
 
   useEffect(() => {
     if (selectedIds.size === 0) {
@@ -79,19 +90,21 @@ export default function TopBar(): React.JSX.Element {
     setImportProgress({
       phase: 'import',
       done: 0,
-      total: result.invoices.length,
+      total: result.invoices.length + result.trip_itineraries.length,
       imported: 0,
       skipped: 0,
       ocrProcessed: 0,
       ocrFailed: 0
     })
     try {
-      const importResult = await window.api.importPdfs(result.invoices)
+      const importResult = await window.api.importBatchFiles(result.invoices, result.trip_itineraries)
       await loadInvoices()
       setScanState({ stage: 'idle' })
+      setUnmatchedTripItems((importResult.unmatchedDetails || []) as UnmatchedTripItinerary[])
       alert(
         `导入完成：新增 ${importResult.imported} 张，跳过重复 ${importResult.skipped} 张\n` +
-          `重新识别：成功 ${importResult.ocrProcessed} 张，失败 ${importResult.ocrFailed} 张`
+          `重新识别：成功 ${importResult.ocrProcessed} 张，失败 ${importResult.ocrFailed} 张\n` +
+          `行程单绑定：成功 ${importResult.attachmentImported} 份，重复 ${importResult.attachmentSkipped} 份，未匹配 ${importResult.attachmentUnmatched} 份，失败 ${importResult.attachmentFailed} 份`
       )
     } catch (e) {
       setScanState({ stage: 'error', folder, error: e instanceof Error ? e.message : String(e) })
@@ -115,6 +128,14 @@ export default function TopBar(): React.JSX.Element {
     if (!selectedIds.size) return
     if (!confirm(`确认删除选中的 ${selectedIds.size} 张发票？此操作不可撤销。`)) return
     await deleteSelected()
+  }
+
+  async function handleBindUnmatchedTrip(filePath: string, invoiceId: string): Promise<void> {
+    const result = await window.api.importInvoiceAttachments(invoiceId, [filePath])
+    await loadInvoices()
+    if (result.imported === 0 && result.skipped > 0) {
+      alert('这份行程单已绑定或已存在，已跳过重复导入。')
+    }
   }
 
   return (
@@ -175,7 +196,11 @@ export default function TopBar(): React.JSX.Element {
               <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-md">
                 <div className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
                 <span className="text-sm text-blue-700">
-                  {importProgress.phase === 'import' ? '导入中' : '识别中'} {importProgress.done}/{importProgress.total}
+                  {importProgress.phase === 'import'
+                    ? '导入中'
+                    : importProgress.phase === 'ocr'
+                      ? '识别中'
+                      : '绑定行程单'} {importProgress.done}/{importProgress.total}
                 </span>
                 <div className="w-20 h-1.5 bg-blue-200 rounded-full overflow-hidden">
                   <div
@@ -264,6 +289,13 @@ export default function TopBar(): React.JSX.Element {
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
       {showReport && <ReportModal onClose={() => setShowReport(false)} />}
+      {unmatchedTripItems.length > 0 && (
+        <TripItineraryReviewModal
+          items={unmatchedTripItems}
+          onBind={handleBindUnmatchedTrip}
+          onClose={() => setUnmatchedTripItems([])}
+        />
+      )}
       {(scanState.stage === 'scanning' || scanState.stage === 'ready' || scanState.stage === 'error' || scanState.stage === 'importing') && (
         <FolderScanModal
           folderPath={scanState.folder}

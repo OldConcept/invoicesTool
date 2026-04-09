@@ -30,10 +30,46 @@ const api = {
   scanFolder: (
     folderPath: string,
     mode?: 'fast' | 'balanced' | 'accurate'
-  ): Promise<{ total: number; invoices: string[]; non_invoices: string[] }> =>
+  ): Promise<{ total: number; invoices: string[]; trip_itineraries: string[]; non_invoices: string[] }> =>
     ipcRenderer.invoke('scan-folder', folderPath, mode),
+  importBatchFiles: (
+    invoicePaths: string[],
+    tripItineraryPaths: string[]
+  ): Promise<{
+    success: boolean
+    imported: number
+    skipped: number
+    ocrProcessed: number
+    ocrFailed: number
+    attachmentImported: number
+    attachmentSkipped: number
+    attachmentUnmatched: number
+    attachmentFailed: number
+    unmatchedDetails: Array<{
+      filePath: string
+      detectedAmount: number | null
+      detectedDate: string | null
+      detectedVendor: string | null
+      reason: string
+      suggestions: Array<{
+        invoiceId: string
+        vendor: string | null
+        date: string | null
+        total: number | null
+        score: number
+      }>
+    }>
+  }> => ipcRenderer.invoke('import-batch-files', invoicePaths, tripItineraryPaths),
   cancelScan: (): Promise<{ success: boolean }> => ipcRenderer.invoke('cancel-scan'),
   getPdfData: (filePath: string): Promise<string> => ipcRenderer.invoke('get-pdf-data', filePath),
+  getInvoiceAttachments: (invoiceId: string) => ipcRenderer.invoke('get-invoice-attachments', invoiceId),
+  importInvoiceAttachments: (
+    invoiceId: string,
+    paths: string[]
+  ): Promise<{ imported: number; skipped: number }> =>
+    ipcRenderer.invoke('import-invoice-attachments', invoiceId, paths),
+  deleteInvoiceAttachment: (id: string): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('delete-invoice-attachment', id),
 
   // 发票 CRUD
   getInvoices: (filter?: {

@@ -20,6 +20,14 @@ interface Invoice {
   file_path: string
 }
 
+interface InvoiceAttachment {
+  id: string
+  invoice_id: string
+  file_path: string
+  doc_type: string
+  source_name: string | null
+}
+
 interface ReportFilter {
   startDate?: string
   endDate?: string
@@ -68,6 +76,49 @@ function getInvoices(filter: ReportFilter): Invoice[] {
     note: row[10] as string | null,
     file_path: row[11] as string
   }))
+}
+
+function getAttachmentsByInvoiceIds(invoiceIds: string[]): Map<string, InvoiceAttachment[]> {
+  if (!invoiceIds.length) return new Map()
+
+  const db = getDb()
+  const ids = invoiceIds.map((id) => `'${id.replace(/'/g, "''")}'`).join(',')
+  const result = db.exec(
+    `SELECT id, invoice_id, file_path, doc_type, source_name
+     FROM invoice_attachments
+     WHERE invoice_id IN (${ids})
+     ORDER BY created_at ASC`
+  )
+
+  const map = new Map<string, InvoiceAttachment[]>()
+  if (!result.length || !result[0].values.length) return map
+
+  result[0].values.forEach((row) => {
+    const attachment: InvoiceAttachment = {
+      id: row[0] as string,
+      invoice_id: row[1] as string,
+      file_path: row[2] as string,
+      doc_type: row[3] as string,
+      source_name: row[4] as string | null
+    }
+    const list = map.get(attachment.invoice_id) || []
+    list.push(attachment)
+    map.set(attachment.invoice_id, list)
+  })
+
+  return map
+}
+
+function sanitizeFileName(name: string): string {
+  return name.replace(/[/\\:*?"<>|]/g, '_').trim() || '未命名'
+}
+
+function buildExportFolderName(inv: Invoice, index: number): string {
+  const prefix = String(index + 1).padStart(3, '0')
+  const date = sanitizeFileName(inv.date || 'nodate')
+  const vendor = sanitizeFileName(inv.vendor || 'unknown')
+  const total = `${(inv.total || 0).toFixed(0)}元`
+  return `${prefix}_${date}_${vendor}_${total}`
 }
 
 export async function exportReport(
@@ -209,6 +260,7 @@ export async function exportZip(
 
   try {
     const invoices = getInvoices(filter)
+    const attachmentsByInvoice = getAttachmentsByInvoiceIds(invoices.map((inv) => inv.id))
 
     // First create the Excel report in a temp file
     const tempDir = require('os').tmpdir()
@@ -241,17 +293,24 @@ export async function exportZip(
       archive.file(tempExcel, { name: '报销汇总.xlsx' })
 
       // Add PDFs grouped by category
-      const categoryDirs = new Map<string, number>()
-      for (const inv of invoices) {
-        if (!fs.existsSync(inv.file_path)) continue
-        const cat = inv.category
-        const idx = (categoryDirs.get(cat) || 0) + 1
-        categoryDirs.set(cat, idx)
-        const vendor = (inv.vendor || 'unknown').replace(/[/\\:*?"<>|]/g, '_')
-        const date = inv.date || 'nodate'
-        const fileName = `${date}_${vendor}_${(inv.total || 0).toFixed(0)}元.pdf`
-        archive.file(inv.file_path, { name: `发票/${cat}/${fileName}` })
-      }
+      invoices.forEach((inv, index) => {
+        if (!fs.existsSync(inv.file_path)) return
+        const cat = sanitizeFileName(inv.category)
+        const folderName = buildExportFolderName(inv, index)
+        const baseDir = `发票/${cat}/${folderName}`
+        archive.file(inv.file_path, { name: `${baseDir}/发票.pdf` })
+
+        const attachments = attachmentsByInvoice.get(inv.id) || []
+        attachments.forEach((attachment, attachmentIndex) => {
+          if (!fs.existsSync(attachment.file_path)) return
+          const sourceStem = attachment.source_name
+            ? sanitizeFileName(path.basename(attachment.source_name, path.extname(attachment.source_name)))
+            : `附件_${attachmentIndex + 1}`
+          archive.file(attachment.file_path, {
+            name: `${baseDir}/行程单_${attachmentIndex + 1}_${sourceStem}.pdf`
+          })
+        })
+      })
 
       archive.finalize()
     })

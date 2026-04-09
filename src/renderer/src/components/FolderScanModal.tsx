@@ -3,11 +3,12 @@ import React from 'react'
 type ScanResult = {
   total: number
   invoices: string[]
+  trip_itineraries: string[]
   non_invoices: string[]
 }
 
 type ImportProgress = {
-  phase: 'import' | 'ocr' | 'done'
+  phase: 'import' | 'ocr' | 'attachment' | 'done'
   done: number
   total: number
   imported: number
@@ -47,6 +48,8 @@ export default function FolderScanModal({
       ? `导入中 ${importProgress.done}/${importProgress.total}`
       : importProgress?.phase === 'ocr'
         ? `识别中 ${importProgress.done}/${importProgress.total}`
+        : importProgress?.phase === 'attachment'
+          ? `绑定行程单 ${importProgress.done}/${importProgress.total}`
         : importProgress?.phase === 'done'
           ? '导入完成'
           : '处理中...'
@@ -121,7 +124,7 @@ export default function FolderScanModal({
               )}
 
               {/* Summary cards */}
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-4 gap-2">
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
                   <div className="text-xl font-bold text-gray-700">{result.total}</div>
                   <div className="text-xs text-gray-500 mt-0.5">PDF 文件</div>
@@ -129,6 +132,10 @@ export default function FolderScanModal({
                 <div className="bg-blue-50 rounded-lg p-3 text-center">
                   <div className="text-xl font-bold text-blue-700">{result.invoices.length}</div>
                   <div className="text-xs text-blue-500 mt-0.5">识别为发票</div>
+                </div>
+                <div className="bg-cyan-50 rounded-lg p-3 text-center">
+                  <div className="text-xl font-bold text-cyan-700">{result.trip_itineraries.length}</div>
+                  <div className="text-xs text-cyan-500 mt-0.5">打车行程单</div>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
                   <div className="text-xl font-bold text-gray-400">{result.non_invoices.length}</div>
@@ -164,6 +171,29 @@ export default function FolderScanModal({
                   </div>
                 </div>
               )}
+
+              {result.trip_itineraries.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-gray-500 mb-1.5">将尝试自动绑定的打车行程单</p>
+                  <div className="border border-gray-100 rounded-lg overflow-hidden max-h-40 overflow-y-auto">
+                    {result.trip_itineraries.map((p, i) => (
+                      <div
+                        key={p}
+                        className={`flex items-center gap-2 px-3 py-2 text-xs ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}
+                      >
+                        <svg className="w-3.5 h-3.5 flex-shrink-0 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <span className="truncate text-gray-600" title={p}>{p.split('/').pop()}</span>
+                        <span className="flex-shrink-0 text-gray-300 truncate text-right" style={{ maxWidth: '120px' }} title={p}>
+                          {p.split('/').slice(-3, -1).join('/')}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -177,12 +207,12 @@ export default function FolderScanModal({
           >
             取消
           </button>
-          {!importing && result && result.invoices.length > 0 && (
+          {!importing && result && (result.invoices.length > 0 || result.trip_itineraries.length > 0) && (
             <button
               onClick={onConfirm}
               className="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
             >
-              导入 {result.invoices.length} 张发票
+              导入 {result.invoices.length} 张发票{result.trip_itineraries.length > 0 ? ` + ${result.trip_itineraries.length} 份行程单` : ''}
             </button>
           )}
           {importing && (

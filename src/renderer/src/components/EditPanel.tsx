@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useInvoiceStore } from '../stores/invoiceStore'
-import { Invoice, InvoiceCategory, InvoiceType } from '../types/invoice'
+import { Invoice, InvoiceAttachment, InvoiceCategory, InvoiceType } from '../types/invoice'
 
 const CATEGORIES: InvoiceCategory[] = ['城市间交通', '打车', '住宿', '餐饮外卖']
 const INVOICE_TYPES: InvoiceType[] = [
@@ -42,6 +42,10 @@ export default function EditPanel(): React.JSX.Element {
   const invoice = invoices.find((i) => i.id === activeInvoiceId) || null
 
   const [form, setForm] = useState<FormState | null>(null)
+  const [attachments, setAttachments] = useState<InvoiceAttachment[]>([])
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false)
+  const [attachmentImporting, setAttachmentImporting] = useState(false)
+  const [attachmentDeletingId, setAttachmentDeletingId] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -57,6 +61,36 @@ export default function EditPanel(): React.JSX.Element {
   // Re-sync when: switching invoices OR OCR finishes (isOcrLoading flips false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invoice?.id, isOcrLoading])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadAttachments(): Promise<void> {
+      if (!invoice) {
+        setAttachments([])
+        setAttachmentsLoading(false)
+        return
+      }
+
+      setAttachmentsLoading(true)
+      try {
+        const next = await window.api.getInvoiceAttachments(invoice.id)
+        if (!cancelled) {
+          setAttachments(next as InvoiceAttachment[])
+        }
+      } finally {
+        if (!cancelled) {
+          setAttachmentsLoading(false)
+        }
+      }
+    }
+
+    loadAttachments()
+
+    return () => {
+      cancelled = true
+    }
+  }, [invoice?.id])
 
   if (!invoice || !form) {
     return (
@@ -75,6 +109,11 @@ export default function EditPanel(): React.JSX.Element {
   function handleChange(field: keyof FormState, value: string): void {
     setForm((f) => f ? { ...f, [field]: value } : f)
     setDirty(true)
+  }
+
+  async function reloadAttachments(invoiceId: string): Promise<void> {
+    const next = await window.api.getInvoiceAttachments(invoiceId)
+    setAttachments(next as InvoiceAttachment[])
   }
 
   async function handleSave(): Promise<void> {
@@ -97,7 +136,44 @@ export default function EditPanel(): React.JSX.Element {
     setDirty(false)
   }
 
+  async function handleAddAttachments(): Promise<void> {
+    if (!invoice) return
+    const paths = await window.api.selectPdfFiles()
+    if (!paths.length) return
+
+    setAttachmentImporting(true)
+    try {
+      const result = await window.api.importInvoiceAttachments(invoice.id, paths)
+      await reloadAttachments(invoice.id)
+      alert(`已添加 ${result.imported} 份行程单，跳过重复 ${result.skipped} 份`)
+    } catch (error) {
+      alert(`添加行程单失败: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setAttachmentImporting(false)
+    }
+  }
+
+  async function handleDeleteAttachment(attachment: InvoiceAttachment): Promise<void> {
+    if (!invoice) return
+    if (!confirm('确认移除这份行程单附件？')) return
+
+    setAttachmentDeletingId(attachment.id)
+    try {
+      await window.api.deleteInvoiceAttachment(attachment.id)
+      await reloadAttachments(invoice.id)
+    } catch (error) {
+      alert(`移除失败: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setAttachmentDeletingId(null)
+    }
+  }
+
   // isOcrLoading is already derived above the early return
+
+  function getFileName(filePath: string): string {
+    const parts = filePath.split(/[/\\]/)
+    return parts[parts.length - 1] || filePath
+  }
 
   function FieldLabel({ children }: { children: React.ReactNode }): React.JSX.Element {
     return <label className="block text-xs font-medium text-gray-500 mb-1">{children}</label>
@@ -158,7 +234,7 @@ export default function EditPanel(): React.JSX.Element {
             </button>
           </div>
         </div>
-        <p className="text-xs text-gray-400 truncate">{invoice.filePath.split('/').slice(-1)[0]}</p>
+        <p className="text-xs text-gray-400 truncate">{getFileName(invoice.filePath)}</p>
       </div>
 
       <div className="p-4 flex flex-col gap-3">
@@ -250,6 +326,75 @@ export default function EditPanel(): React.JSX.Element {
             className="w-full text-sm border border-gray-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white resize-none"
           />
         </div>
+
+        {form.category === '打车' && (
+          <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div>
+                <div className="text-sm font-medium text-gray-800">行程单附件</div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  绑定打车行程单，导出报销包时一并导出，不参与金额统计
+                </div>
+              </div>
+              <button
+                onClick={handleAddAttachments}
+                disabled={attachmentImporting}
+                className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-white text-blue-700 border border-blue-200 rounded-md hover:bg-blue-50 transition-colors disabled:opacity-50"
+              >
+                {attachmentImporting ? (
+                  <div className="w-3 h-3 border border-blue-500 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                )}
+                添加行程单
+              </button>
+            </div>
+
+            {attachmentsLoading ? (
+              <div className="flex items-center gap-2 py-2 text-xs text-gray-500">
+                <div className="w-3.5 h-3.5 border border-gray-400 border-t-transparent rounded-full animate-spin" />
+                加载中...
+              </div>
+            ) : attachments.length === 0 ? (
+              <div className="text-xs text-gray-400 py-1">暂未绑定行程单</div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {attachments.map((attachment, index) => (
+                  <div
+                    key={attachment.id}
+                    className="flex items-center justify-between gap-2 rounded-md border border-gray-200 bg-white px-2.5 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm text-gray-800 truncate">
+                        {attachment.sourceName || `行程单 ${index + 1}`}
+                      </div>
+                      <div className="text-xs text-gray-400 truncate">
+                        {getFileName(attachment.filePath)}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button
+                        onClick={() => window.api.showItemInFolder(attachment.filePath)}
+                        className="text-xs text-gray-500 hover:text-gray-700"
+                      >
+                        定位
+                      </button>
+                      <button
+                        onClick={() => handleDeleteAttachment(attachment)}
+                        disabled={attachmentDeletingId === attachment.id}
+                        className="text-xs text-red-500 hover:text-red-700 disabled:opacity-50"
+                      >
+                        {attachmentDeletingId === attachment.id ? '移除中...' : '移除'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Save button */}

@@ -8,6 +8,8 @@ export type InvoiceType =
   | '出租车票'
   | '其他'
 
+export type InvoiceAttachmentDocType = 'trip_itinerary'
+
 export interface Invoice {
   id: string
   filePath: string
@@ -25,6 +27,33 @@ export interface Invoice {
   invoiceType: InvoiceType | null
   ocrRaw: string | null
   createdAt: string
+  attachmentCount: number
+}
+
+export interface InvoiceAttachment {
+  id: string
+  invoiceId: string
+  filePath: string
+  docType: InvoiceAttachmentDocType
+  sourceName: string | null
+  createdAt: string
+}
+
+export interface TripItinerarySuggestion {
+  invoiceId: string
+  vendor: string | null
+  date: string | null
+  total: number | null
+  score: number
+}
+
+export interface UnmatchedTripItinerary {
+  filePath: string
+  detectedAmount: number | null
+  detectedDate: string | null
+  detectedVendor: string | null
+  reason: string
+  suggestions: TripItinerarySuggestion[]
 }
 
 export interface Project {

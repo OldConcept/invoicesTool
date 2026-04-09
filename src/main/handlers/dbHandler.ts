@@ -93,6 +93,23 @@ export async function initDb(): Promise<void> {
     )
   `)
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS invoice_attachments (
+      id          TEXT PRIMARY KEY,
+      invoice_id  TEXT NOT NULL,
+      file_path   TEXT NOT NULL,
+      file_hash   TEXT UNIQUE,
+      doc_type    TEXT NOT NULL DEFAULT 'trip_itinerary',
+      source_name TEXT,
+      created_at  TEXT NOT NULL
+    )
+  `)
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_invoice_attachments_invoice_id
+    ON invoice_attachments (invoice_id)
+  `)
+
   saveDb()
 }
 

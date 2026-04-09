@@ -500,6 +500,13 @@ _SCAN_WEAK_KEYWORDS = [
     '电子客票', '铁路', '票价', '酒店', '出租车',
 ]
 
+_TRIP_ITINERARY_KEYWORDS = [
+    '行程单', '滴滴出行', '网约车', '快车', '专车', '订单号',
+    '上车时间', '下车时间', '行程起点', '行程终点', '实付金额',
+]
+
+_TRIP_RIDE_KEYWORDS = ['滴滴', '网约车', '快车', '专车', '出租车', '打车', '的士']
+
 _SCAN_SCORE_CONFIDENT = 4
 _SCAN_SCORE_LOW_CONF = 3
 _SCAN_MODE_SET = {'fast', 'balanced', 'accurate'}
@@ -512,6 +519,20 @@ def _scan_text_score(text):
     if '¥' in text or '￥' in text:
         score += 1
     return score, strong_hits, weak_hits
+
+
+def _looks_like_trip_itinerary(text):
+    normalized = text.replace(' ', '').replace('\t', '')
+    strong_hits = sum(1 for kw in _SCAN_STRONG_KEYWORDS if kw in normalized)
+    itinerary_hits = sum(1 for kw in _TRIP_ITINERARY_KEYWORDS if kw in normalized)
+    ride_hits = sum(1 for kw in _TRIP_RIDE_KEYWORDS if kw in normalized)
+
+    if strong_hits > 0:
+        return False
+    if '发票号码' in normalized or '发票代码' in normalized or '纳税人识别号' in normalized:
+        return False
+
+    return itinerary_hits >= 2 and ride_hits >= 1
 
 
 def _scan_with_qr(pdf_path, mode='balanced'):
@@ -537,9 +558,11 @@ def _scan_with_text(pdf_path, mode='balanced'):
     low_confidence = (not is_text_based) or score < _SCAN_SCORE_LOW_CONF
     return {
         'is_text_based': is_text_based,
+        'text': text,
         'score': score,
         'confident': confident,
         'low_confidence': low_confidence,
+        'trip_itinerary': _looks_like_trip_itinerary(text),
     }
 
 
@@ -551,33 +574,37 @@ def _scan_with_light_ocr(pdf_path):
     text = '\n'.join(lines) if lines else ''
     score, strong_hits, _ = _scan_text_score(text)
     confident = len(strong_hits) >= 2 or score >= _SCAN_SCORE_CONFIDENT
-    return {'score': score, 'confident': confident}
+    return {'score': score, 'confident': confident, 'trip_itinerary': _looks_like_trip_itinerary(text)}
 
 
-def _is_invoice_pdf(pdf_path, mode='balanced'):
+def _classify_pdf_kind(pdf_path, mode='balanced'):
     qr_fields, qr_confident = _scan_with_qr(pdf_path, mode=mode)
     if qr_confident:
-        return True
+        return 'invoice'
 
     text_result = _scan_with_text(pdf_path, mode=mode)
+    if text_result['trip_itinerary']:
+        return 'trip_itinerary'
     if text_result['confident']:
-        return True
+        return 'invoice'
 
     allow_light_ocr = mode != 'fast'
     if allow_light_ocr and text_result['low_confidence']:
         ocr_result = _scan_with_light_ocr(pdf_path)
+        if ocr_result['trip_itinerary']:
+            return 'trip_itinerary'
         if ocr_result['confident']:
-            return True
+            return 'invoice'
 
     # QR 有部分字段时，放宽为候选发票（降低漏判）
     if mode in ('balanced', 'accurate') and (qr_fields.get('invoice_no') or qr_fields.get('total') is not None):
-        return True
+        return 'invoice'
 
-    return False
+    return 'other'
 
 def _scan_one_pdf(args):
     pdf_path, mode = args
-    return pdf_path, _is_invoice_pdf(pdf_path, mode=mode)
+    return pdf_path, _classify_pdf_kind(pdf_path, mode=mode)
 
 
 def scan_folder_for_invoices(folder_path, mode='balanced'):
@@ -593,25 +620,36 @@ def scan_folder_for_invoices(folder_path, mode='balanced'):
                 pdf_paths.append(os.path.join(root, fname))
 
     invoices = []
+    trip_itineraries = []
     non_invoices = []
 
     # fast 模式只做扫码+文本，允许并发以显著提速
     if mode == 'fast' and pdf_paths:
         workers = min(8, max(2, os.cpu_count() or 2))
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for full_path, is_invoice in ex.map(_scan_one_pdf, [(p, mode) for p in pdf_paths]):
-                if is_invoice:
+            for full_path, pdf_kind in ex.map(_scan_one_pdf, [(p, mode) for p in pdf_paths]):
+                if pdf_kind == 'invoice':
                     invoices.append(full_path)
+                elif pdf_kind == 'trip_itinerary':
+                    trip_itineraries.append(full_path)
                 else:
                     non_invoices.append(full_path)
     else:
         for full_path in pdf_paths:
-            if _is_invoice_pdf(full_path, mode=mode):
+            pdf_kind = _classify_pdf_kind(full_path, mode=mode)
+            if pdf_kind == 'invoice':
                 invoices.append(full_path)
+            elif pdf_kind == 'trip_itinerary':
+                trip_itineraries.append(full_path)
             else:
                 non_invoices.append(full_path)
 
-    return {'total': len(pdf_paths), 'invoices': invoices, 'non_invoices': non_invoices}
+    return {
+        'total': len(pdf_paths),
+        'invoices': invoices,
+        'trip_itineraries': trip_itineraries,
+        'non_invoices': non_invoices,
+    }
 
 
 def main():
