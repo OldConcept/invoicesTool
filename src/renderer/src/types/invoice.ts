@@ -1,0 +1,60 @@
+export type InvoiceCategory = '城市间交通' | '打车' | '住宿' | '餐饮外卖'
+
+export type InvoiceType =
+  | '增值税普通发票'
+  | '增值税专用发票'
+  | '行程单'
+  | '酒店发票'
+  | '出租车票'
+  | '其他'
+
+export interface Invoice {
+  id: string
+  filePath: string
+  fileHash: string
+  invoiceNo: string | null
+  date: string | null // YYYY-MM-DD
+  vendor: string | null
+  vendorTaxId: string | null
+  amount: number | null
+  tax: number | null
+  total: number | null
+  category: InvoiceCategory
+  projectTag: string | null
+  note: string | null
+  invoiceType: InvoiceType | null
+  ocrRaw: string | null
+  createdAt: string
+}
+
+export interface Project {
+  id: string
+  name: string
+  color: string
+}
+
+export interface OcrResult {
+  invoice_no: string | null
+  date: string | null
+  vendor: string | null
+  vendor_tax_id: string | null
+  amount: number | null
+  tax: number | null
+  total: number | null
+  category: InvoiceCategory | null
+  invoice_type: InvoiceType | null
+}
+
+export interface ReportFilter {
+  startDate?: string
+  endDate?: string
+  projectTag?: string
+  categories?: InvoiceCategory[]
+}
+
+export interface AppSettings {
+  pythonPath: string
+  dataDir: string
+  exporterName: string
+  companyName: string
+}
