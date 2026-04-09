@@ -57,15 +57,6 @@ npm run dist:mac   # 打包 macOS arm64 (dmg)
 npm run dist:win   # 打包 Windows x64 (nsis exe)
 ```
 
-## 打包产物
-
-默认输出目录：`release/`
-
-常见文件：
-
-- Windows: `发票整理工具 Setup <version>.exe`
-- macOS ARM: `发票整理工具-<version>-arm64.dmg`
-
 ## 使用流程
 
 1. 导入发票 PDF（单个或批量）
@@ -87,12 +78,3 @@ npm run dist:win   # 打包 Windows x64 (nsis exe)
 
 - 数据库：`<userData>/data/invoices.sqlite`
 - 发票文件：`<userData>/invoices/*.pdf`
-
-## 已知注意事项
-
-1. 当前打包配置未签名，Windows/macOS 可能出现系统安全提示。
-2. 发布版 OCR 依赖 `resources/scripts/ocr.py`，本项目已在 `package.json > build.extraResources` 中配置打包。
-
-## 仓库
-
-- GitHub: https://github.com/OldConcept/invoicesTool
