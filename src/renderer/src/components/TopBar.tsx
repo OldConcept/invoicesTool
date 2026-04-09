@@ -33,7 +33,17 @@ type ImportProgress = {
 }
 
 export default function TopBar(): React.JSX.Element {
-  const { selectedIds, deleteSelected, loadInvoices, clearSelection, runOcrBatch, batchOcrProgress, projects, loadProjects } = useInvoiceStore()
+  const {
+    selectedIds,
+    deleteSelected,
+    loadInvoices,
+    clearSelection,
+    runOcrBatch,
+    batchOcrProgress,
+    projects,
+    loadProjects,
+    replaceProjectTagBatch
+  } = useInvoiceStore()
   const [showSettings, setShowSettings] = useState(false)
   const [showReport, setShowReport] = useState(false)
   const [scanState, setScanState] = useState<ScanState>({ stage: 'idle' })
@@ -42,10 +52,13 @@ export default function TopBar(): React.JSX.Element {
   const [unmatchedTripItems, setUnmatchedTripItems] = useState<UnmatchedTripItinerary[]>([])
   const [pendingImportPaths, setPendingImportPaths] = useState<string[] | null>(null)
   const [batchProjectTag, setBatchProjectTag] = useState('')
+  const [batchReplaceProjectTag, setBatchReplaceProjectTag] = useState('')
+  const [batchReplacingProject, setBatchReplacingProject] = useState(false)
 
   useEffect(() => {
     if (selectedIds.size === 0) {
       setShowAdvancedActions(false)
+      setBatchReplaceProjectTag('')
     }
   }, [selectedIds.size])
 
@@ -158,6 +171,16 @@ export default function TopBar(): React.JSX.Element {
     await loadProjects()
   }
 
+  async function handleBatchReplaceProjectTag(): Promise<void> {
+    if (!selectedIds.size) return
+    setBatchReplacingProject(true)
+    try {
+      await replaceProjectTagBatch(batchReplaceProjectTag || null)
+    } finally {
+      setBatchReplacingProject(false)
+    }
+  }
+
   return (
     <>
       <div className="flex items-center gap-2 px-4 py-2 bg-white border-b border-gray-200 select-none"
@@ -249,16 +272,35 @@ export default function TopBar(): React.JSX.Element {
                 {showAdvancedActions ? '收起高级' : '高级'}
               </button>
               {showAdvancedActions && (
-                <button
-                  onClick={runOcrBatch}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 transition-colors"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                  </svg>
-                  重新识别
-                </button>
+                <>
+                  <button
+                    onClick={runOcrBatch}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                    重新识别
+                  </button>
+                  <select
+                    value={batchReplaceProjectTag}
+                    onChange={(e) => setBatchReplaceProjectTag(e.target.value)}
+                    className="text-sm border border-gray-300 rounded-md px-3 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">清空项目绑定</option>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.name}>{project.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => void handleBatchReplaceProjectTag()}
+                    disabled={batchReplacingProject}
+                    className="px-3 py-1.5 bg-slate-700 text-white text-sm rounded-md hover:bg-slate-800 transition-colors disabled:opacity-50"
+                  >
+                    {batchReplacingProject ? '替换中...' : '批量替换项目'}
+                  </button>
+                </>
               )}
               <button
                 onClick={handleDelete}

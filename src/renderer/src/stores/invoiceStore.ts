@@ -30,6 +30,7 @@ interface InvoiceStore {
   selectAll: () => void
   clearSelection: () => void
   updateInvoice: (id: string, data: Partial<Invoice>) => Promise<void>
+  replaceProjectTagBatch: (projectTag: string | null) => Promise<void>
   deleteSelected: () => Promise<void>
   saveSettings: (settings: Partial<AppSettings>) => Promise<void>
   runOcr: (invoice: Invoice) => Promise<void>
@@ -100,6 +101,22 @@ export const useInvoiceStore = create<InvoiceStore>((set, get) => ({
     await window.api.updateInvoice(id, data as Record<string, unknown>)
     set((s) => ({
       invoices: s.invoices.map((inv) => (inv.id === id ? { ...inv, ...data } : inv))
+    }))
+  },
+
+  replaceProjectTagBatch: async (projectTag) => {
+    const { selectedIds } = get()
+    const ids = [...selectedIds]
+    if (!ids.length) return
+
+    await Promise.all(
+      ids.map((id) => window.api.updateInvoice(id, { projectTag }))
+    )
+
+    set((s) => ({
+      invoices: s.invoices.map((inv) => (
+        selectedIds.has(inv.id) ? { ...inv, projectTag } : inv
+      ))
     }))
   },
 
