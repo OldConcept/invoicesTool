@@ -22,6 +22,34 @@ import warnings
 os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
 warnings.filterwarnings('ignore')
 
+_MAX_MONEY_VALUE = 1_000_000_000.0
+
+
+def parse_money(raw):
+    """
+    解析金额字段，过滤税号这类长数字误识别。
+    返回 float 或 None。
+    """
+    if raw is None:
+        return None
+
+    s = str(raw).strip().replace(',', '').replace('，', '')
+    if not re.fullmatch(r'\d+(?:\.\d{1,2})?', s):
+        return None
+
+    int_part = s.split('.', 1)[0]
+    # 纯数字过长通常是税号/编码，不是金额
+    if '.' not in s and len(int_part) >= 15:
+        return None
+    if len(int_part) > 9:
+        return None
+
+    value = float(s)
+    if value < 0 or value > _MAX_MONEY_VALUE:
+        return None
+
+    return round(value, 2)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 第一层：QR 码解析
@@ -74,10 +102,9 @@ def parse_invoice_qr(qr_text):
 
         # parts[4]: 含税金额
         if len(parts) > 4 and re.match(r'^\d+\.?\d*$', parts[4]):
-            try:
-                result['total'] = float(parts[4])
-            except ValueError:
-                pass
+            money = parse_money(parts[4])
+            if money is not None:
+                result['total'] = money
 
         # parts[5]: 日期 YYYYMMDD
         if len(parts) > 5 and re.match(r'^\d{8}$', parts[5]):
@@ -86,12 +113,9 @@ def parse_invoice_qr(qr_text):
 
         # parts[6]: 税前金额（可为空）
         if len(parts) > 6 and re.match(r'^\d+\.?\d*$', parts[6]):
-            try:
-                amt = float(parts[6])
-                if amt > 0:
-                    result['amount'] = amt
-            except ValueError:
-                pass
+            amt = parse_money(parts[6])
+            if amt is not None and amt > 0:
+                result['amount'] = amt
 
     return result
 
@@ -303,43 +327,42 @@ def extract_fields(lines):
     ]:
         m = re.search(pat, text)
         if m:
-            try:
-                total = float(m.group(1).replace(',', '').replace('，', ''))
+            money = parse_money(m.group(1))
+            if money is not None:
+                total = money
                 break
-            except ValueError:
-                pass
 
     for pat in [r'不含税金额[：:]\s*[¥￥]?\s*([\d,，.]+)',
                 r'税前金额[：:]\s*[¥￥]?\s*([\d,，.]+)']:
         m = re.search(pat, text)
         if m:
-            try:
-                amount = float(m.group(1).replace(',', '').replace('，', ''))
+            money = parse_money(m.group(1))
+            if money is not None:
+                amount = money
                 break
-            except ValueError:
-                pass
 
     for pat in [r'税\s*额[：:]\s*[¥￥]?\s*([\d,，.]+)',
                 r'增值税额[：:]\s*[¥￥]?\s*([\d,，.]+)']:
         m = re.search(pat, text)
         if m:
-            try:
-                tax = float(m.group(1).replace(',', '').replace('，', ''))
+            money = parse_money(m.group(1))
+            if money is not None:
+                tax = money
                 break
-            except ValueError:
-                pass
 
     # 合计税额（汇总行）
     if tax is None:
         m = re.search(r'合\s*计.*?[¥￥]\s*[\d.]+\s*[¥￥]\s*([\d.]+)', text)
         if m:
-            try:
-                tax = float(m.group(1))
-            except ValueError:
-                pass
+            tax = parse_money(m.group(1))
 
     if total and tax and not amount:
         amount = round(total - tax, 2)
+
+    if total is not None and tax is not None and tax > total:
+        tax = None
+    if total is not None and amount is not None and amount > total:
+        amount = None
 
     # 发票类型
     invoice_type = '其他'
