@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import path from 'path'
 import { initDb, getDb, saveDb } from './handlers/dbHandler'
-import { importPdfs, importFolder, getPdfBase64, deletePdfFiles } from './handlers/fileHandler'
+import { importPdfs, importFolder, getPdfBase64, deletePdfFiles, ImportedItem } from './handlers/fileHandler'
 import { runOcr, scanFolder, setPythonPath, stopOcrProcess, cancelScanProcess } from './handlers/ocrHandler'
 import { exportReport, exportZip } from './handlers/exportHandler'
 import { v4 as uuidv4 } from 'uuid'
@@ -24,7 +24,6 @@ function createWindow(): void {
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-    mainWindow.webContents.openDevTools()
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
@@ -45,6 +44,92 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
+function toNullableString(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const s = v.trim()
+  return s ? s : null
+}
+
+function toNullableNumber(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+type ImportProgressPayload = {
+  phase: 'import' | 'ocr' | 'done'
+  done: number
+  total: number
+  imported: number
+  skipped: number
+  ocrProcessed: number
+  ocrFailed: number
+}
+
+async function autoOcrImportedItems(
+  items: ImportedItem[],
+  pythonPath: string,
+  onProgress?: (progress: { done: number; total: number; ocrProcessed: number; ocrFailed: number }) => void
+): Promise<{ ocrProcessed: number; ocrFailed: number }> {
+  if (!items.length) return { ocrProcessed: 0, ocrFailed: 0 }
+
+  setPythonPath(pythonPath)
+  const db = getDb()
+  let ocrProcessed = 0
+  let ocrFailed = 0
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    const result = await runOcr(item.filePath)
+    if (!result.success || !result.data) {
+      ocrFailed++
+      onProgress?.({ done: i + 1, total: items.length, ocrProcessed, ocrFailed })
+      // Python 环境不可用时不重复尝试后续文件，避免导入等待过久
+      if (result.error?.includes('无法启动 Python')) {
+        ocrFailed += items.length - i - 1
+        onProgress?.({ done: items.length, total: items.length, ocrProcessed, ocrFailed })
+        break
+      }
+      continue
+    }
+
+    const data = result.data
+    const category = toNullableString(data.category) || '餐饮外卖'
+    const ocrRaw = JSON.stringify(data)
+
+    db.run(
+      `UPDATE invoices
+       SET invoice_no = ?,
+           date = ?,
+           vendor = ?,
+           vendor_tax_id = ?,
+           amount = ?,
+           tax = ?,
+           total = ?,
+           category = ?,
+           invoice_type = ?,
+           ocr_raw = ?
+       WHERE id = ?`,
+      [
+        toNullableString(data.invoice_no),
+        toNullableString(data.date),
+        toNullableString(data.vendor),
+        toNullableString(data.vendor_tax_id),
+        toNullableNumber(data.amount),
+        toNullableNumber(data.tax),
+        toNullableNumber(data.total),
+        category,
+        toNullableString(data.invoice_type),
+        ocrRaw,
+        item.id
+      ]
+    )
+    ocrProcessed++
+    onProgress?.({ done: i + 1, total: items.length, ocrProcessed, ocrFailed })
+  }
+
+  if (ocrProcessed > 0) saveDb()
+  return { ocrProcessed, ocrFailed }
+}
+
 function registerIpcHandlers(): void {
   // File operations
   ipcMain.handle('select-pdf-files', async () => {
@@ -60,14 +145,98 @@ function registerIpcHandlers(): void {
     return result.filePaths[0] || null
   })
 
-  ipcMain.handle('import-pdfs', (_event, paths: string[]) => {
-    const result = importPdfs(paths)
-    return { success: true, ...result }
+  ipcMain.handle('import-pdfs', async (event, paths: string[]) => {
+    let importSnapshot = { done: 0, total: 0, imported: 0, skipped: 0 }
+    const emit = (payload: ImportProgressPayload): void => {
+      event.sender.send('import-progress', payload)
+    }
+
+    const result = importPdfs(paths, (p) => {
+      importSnapshot = p
+      emit({
+        phase: 'import',
+        done: p.done,
+        total: p.total,
+        imported: p.imported,
+        skipped: p.skipped,
+        ocrProcessed: 0,
+        ocrFailed: 0
+      })
+    })
+    const db = getDb()
+    const settingResult = db.exec("SELECT value FROM settings WHERE key = 'pythonPath'")
+    const pythonPath =
+      settingResult.length && settingResult[0].values.length
+        ? (settingResult[0].values[0][0] as string)
+        : 'python3'
+    const ocr = await autoOcrImportedItems(result.importedItems, pythonPath, (p) => {
+      emit({
+        phase: 'ocr',
+        done: p.done,
+        total: p.total,
+        imported: result.imported,
+        skipped: result.skipped,
+        ocrProcessed: p.ocrProcessed,
+        ocrFailed: p.ocrFailed
+      })
+    })
+    emit({
+      phase: 'done',
+      done: importSnapshot.total || result.imported + result.skipped,
+      total: importSnapshot.total || result.imported + result.skipped,
+      imported: result.imported,
+      skipped: result.skipped,
+      ocrProcessed: ocr.ocrProcessed,
+      ocrFailed: ocr.ocrFailed
+    })
+    return { success: true, imported: result.imported, skipped: result.skipped, ...ocr }
   })
 
-  ipcMain.handle('import-folder', (_event, folderPath: string) => {
-    const result = importFolder(folderPath)
-    return { success: true, ...result }
+  ipcMain.handle('import-folder', async (event, folderPath: string) => {
+    let importSnapshot = { done: 0, total: 0, imported: 0, skipped: 0 }
+    const emit = (payload: ImportProgressPayload): void => {
+      event.sender.send('import-progress', payload)
+    }
+
+    const result = importFolder(folderPath, (p) => {
+      importSnapshot = p
+      emit({
+        phase: 'import',
+        done: p.done,
+        total: p.total,
+        imported: p.imported,
+        skipped: p.skipped,
+        ocrProcessed: 0,
+        ocrFailed: 0
+      })
+    })
+    const db = getDb()
+    const settingResult = db.exec("SELECT value FROM settings WHERE key = 'pythonPath'")
+    const pythonPath =
+      settingResult.length && settingResult[0].values.length
+        ? (settingResult[0].values[0][0] as string)
+        : 'python3'
+    const ocr = await autoOcrImportedItems(result.importedItems, pythonPath, (p) => {
+      emit({
+        phase: 'ocr',
+        done: p.done,
+        total: p.total,
+        imported: result.imported,
+        skipped: result.skipped,
+        ocrProcessed: p.ocrProcessed,
+        ocrFailed: p.ocrFailed
+      })
+    })
+    emit({
+      phase: 'done',
+      done: importSnapshot.total || result.imported + result.skipped,
+      total: importSnapshot.total || result.imported + result.skipped,
+      imported: result.imported,
+      skipped: result.skipped,
+      ocrProcessed: ocr.ocrProcessed,
+      ocrFailed: ocr.ocrFailed
+    })
+    return { success: true, imported: result.imported, skipped: result.skipped, ...ocr }
   })
 
   ipcMain.handle('get-pdf-data', (_event, filePath: string) => {

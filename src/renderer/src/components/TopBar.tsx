@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useInvoiceStore } from '../stores/invoiceStore'
 import SettingsModal from './SettingsModal'
 import ReportModal from './ReportModal'
@@ -11,19 +11,52 @@ type ScanState =
   | { stage: 'error'; folder: string; error: string }
   | { stage: 'importing'; folder: string; result: { total: number; invoices: string[]; non_invoices: string[] } }
 
+type ImportProgress = {
+  phase: 'import' | 'ocr' | 'done'
+  done: number
+  total: number
+  imported: number
+  skipped: number
+  ocrProcessed: number
+  ocrFailed: number
+}
+
 export default function TopBar(): React.JSX.Element {
   const { selectedIds, deleteSelected, loadInvoices, clearSelection, runOcrBatch, batchOcrProgress } = useInvoiceStore()
   const [showSettings, setShowSettings] = useState(false)
   const [showReport, setShowReport] = useState(false)
   const [scanState, setScanState] = useState<ScanState>({ stage: 'idle' })
+  const [showAdvancedActions, setShowAdvancedActions] = useState(false)
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
+
+  useEffect(() => {
+    if (selectedIds.size === 0) {
+      setShowAdvancedActions(false)
+    }
+  }, [selectedIds.size])
+
+  useEffect(() => {
+    const off = window.api.onImportProgress((progress) => {
+      setImportProgress(progress)
+    })
+    return off
+  }, [])
 
   async function handleImport(): Promise<void> {
     const paths = await window.api.selectPdfFiles()
     if (!paths.length) return
-    const result = await window.api.importPdfs(paths)
-    await loadInvoices()
-    if (result.imported > 0 || result.skipped > 0) {
-      alert(`导入完成：新增 ${result.imported} 张，跳过重复 ${result.skipped} 张`)
+    setImportProgress({ phase: 'import', done: 0, total: paths.length, imported: 0, skipped: 0, ocrProcessed: 0, ocrFailed: 0 })
+    try {
+      const result = await window.api.importPdfs(paths)
+      await loadInvoices()
+      if (result.imported > 0 || result.skipped > 0) {
+        alert(
+          `导入完成：新增 ${result.imported} 张，跳过重复 ${result.skipped} 张\n` +
+            `重新识别：成功 ${result.ocrProcessed} 张，失败 ${result.ocrFailed} 张`
+        )
+      }
+    } finally {
+      setImportProgress(null)
     }
   }
 
@@ -43,10 +76,28 @@ export default function TopBar(): React.JSX.Element {
     if (scanState.stage !== 'ready') return
     const { folder, result } = scanState
     setScanState({ stage: 'importing', folder, result })
-    const importResult = await window.api.importPdfs(result.invoices)
-    await loadInvoices()
-    setScanState({ stage: 'idle' })
-    alert(`导入完成：新增 ${importResult.imported} 张，跳过重复 ${importResult.skipped} 张`)
+    setImportProgress({
+      phase: 'import',
+      done: 0,
+      total: result.invoices.length,
+      imported: 0,
+      skipped: 0,
+      ocrProcessed: 0,
+      ocrFailed: 0
+    })
+    try {
+      const importResult = await window.api.importPdfs(result.invoices)
+      await loadInvoices()
+      setScanState({ stage: 'idle' })
+      alert(
+        `导入完成：新增 ${importResult.imported} 张，跳过重复 ${importResult.skipped} 张\n` +
+          `重新识别：成功 ${importResult.ocrProcessed} 张，失败 ${importResult.ocrFailed} 张`
+      )
+    } catch (e) {
+      setScanState({ stage: 'error', folder, error: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setImportProgress(null)
+    }
   }
 
   async function handleScanCancel(): Promise<void> {
@@ -106,7 +157,7 @@ export default function TopBar(): React.JSX.Element {
               <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 border border-purple-200 rounded-md">
                 <div className="w-3.5 h-3.5 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
                 <span className="text-sm text-purple-700">
-                  AI 识别中 {batchOcrProgress.done}/{batchOcrProgress.total}
+                  重新识别中 {batchOcrProgress.done}/{batchOcrProgress.total}
                 </span>
                 <div className="w-20 h-1.5 bg-purple-200 rounded-full overflow-hidden">
                   <div
@@ -118,20 +169,52 @@ export default function TopBar(): React.JSX.Element {
             </>
           )}
 
+          {importProgress && importProgress.phase !== 'done' && !batchOcrProgress && (
+            <>
+              <div className="w-px h-5 bg-gray-300 mx-1" />
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-md">
+                <div className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                <span className="text-sm text-blue-700">
+                  {importProgress.phase === 'import' ? '导入中' : '识别中'} {importProgress.done}/{importProgress.total}
+                </span>
+                <div className="w-20 h-1.5 bg-blue-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                    style={{
+                      width: `${
+                        importProgress.total > 0
+                          ? Math.min(100, (importProgress.done / importProgress.total) * 100)
+                          : 0
+                      }%`
+                    }}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
           {selectedIds.size > 0 && !batchOcrProgress && (
             <>
               <div className="w-px h-5 bg-gray-300 mx-1" />
               <span className="text-sm text-gray-500">已选 {selectedIds.size} 张</span>
               <button
-                onClick={runOcrBatch}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 transition-colors"
+                onClick={() => setShowAdvancedActions((v) => !v)}
+                className="px-2 py-1.5 text-gray-500 text-sm hover:text-gray-700"
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                </svg>
-                批量识别
+                {showAdvancedActions ? '收起高级' : '高级'}
               </button>
+              {showAdvancedActions && (
+                <button
+                  onClick={runOcrBatch}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                  </svg>
+                  重新识别
+                </button>
+              )}
               <button
                 onClick={handleDelete}
                 className="flex items-center gap-1 px-3 py-1.5 bg-red-50 text-red-600 text-sm border border-red-200 rounded-md hover:bg-red-100 transition-colors"
@@ -185,6 +268,8 @@ export default function TopBar(): React.JSX.Element {
         <FolderScanModal
           folderPath={scanState.folder}
           scanning={scanState.stage === 'scanning'}
+          importing={scanState.stage === 'importing'}
+          importProgress={importProgress}
           result={scanState.stage === 'ready' || scanState.stage === 'importing' ? scanState.result : null}
           error={scanState.stage === 'error' ? scanState.error : null}
           onConfirm={handleScanConfirm}

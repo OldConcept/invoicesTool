@@ -248,6 +248,13 @@ def extract_fields(lines):
             return None
         if '：' in v or ':' in v:          # 另一个标签，不是名称值
             return None
+        # 标签文本误识别（不是公司名称）
+        _LABEL_TOKENS = (
+            '统一社会信用代码', '纳税人识别号', '识别号', '税号',
+            '名称', '地址', '电话', '开户行', '账号'
+        )
+        if any(tok in v for tok in _LABEL_TOKENS):
+            return None
         if not re.search(r'[\u4e00-\u9fff]', v):  # 必须含汉字
             return None
         return v
@@ -356,6 +363,32 @@ def extract_fields(lines):
         m = re.search(r'合\s*计.*?[¥￥]\s*[\d.]+\s*[¥￥]\s*([\d.]+)', text)
         if m:
             tax = parse_money(m.group(1))
+
+    # 兜底：从带货币符号的值中推断 amount/tax/total（适配分行表格票）
+    currency_vals = []
+    for line in lines:
+        for raw in re.findall(r'[¥￥]\s*([\d,，]+(?:\.\d{1,2})?)', line):
+            money = parse_money(raw)
+            if money is not None:
+                currency_vals.append(money)
+
+    if currency_vals:
+        inferred_amount = inferred_tax = inferred_total = None
+        if len(currency_vals) >= 3:
+            for i in range(len(currency_vals) - 2):
+                a, t, tot = currency_vals[i], currency_vals[i + 1], currency_vals[i + 2]
+                if t <= tot and a <= tot and abs((a + t) - tot) <= 0.05:
+                    inferred_amount, inferred_tax, inferred_total = a, t, tot
+                    break
+        if inferred_total is None:
+            inferred_total = max(currency_vals)
+
+        if amount is None and inferred_amount is not None:
+            amount = inferred_amount
+        if tax is None and inferred_tax is not None:
+            tax = inferred_tax
+        if total is None and inferred_total is not None:
+            total = inferred_total
 
     if total and tax and not amount:
         amount = round(total - tax, 2)

@@ -6,9 +6,21 @@ type ScanResult = {
   non_invoices: string[]
 }
 
+type ImportProgress = {
+  phase: 'import' | 'ocr' | 'done'
+  done: number
+  total: number
+  imported: number
+  skipped: number
+  ocrProcessed: number
+  ocrFailed: number
+}
+
 interface Props {
   folderPath: string
   scanning: boolean
+  importing?: boolean
+  importProgress?: ImportProgress | null
   result: ScanResult | null
   error: string | null
   onConfirm: () => void
@@ -18,12 +30,26 @@ interface Props {
 export default function FolderScanModal({
   folderPath,
   scanning,
+  importing = false,
+  importProgress = null,
   result,
   error,
   onConfirm,
   onCancel
 }: Props): React.JSX.Element {
   const folderName = folderPath.split('/').pop() || folderPath
+  const importPercent =
+    importProgress && importProgress.total > 0
+      ? Math.min(100, Math.round((importProgress.done / importProgress.total) * 100))
+      : 0
+  const importStageText =
+    importProgress?.phase === 'import'
+      ? `导入中 ${importProgress.done}/${importProgress.total}`
+      : importProgress?.phase === 'ocr'
+        ? `识别中 ${importProgress.done}/${importProgress.total}`
+        : importProgress?.phase === 'done'
+          ? '导入完成'
+          : '处理中...'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
@@ -37,7 +63,11 @@ export default function FolderScanModal({
             </svg>
             <h2 className="text-sm font-semibold text-gray-800">扫描目录</h2>
           </div>
-          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">
+          <button
+            onClick={onCancel}
+            disabled={importing}
+            className="text-gray-400 hover:text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -58,7 +88,7 @@ export default function FolderScanModal({
             <div className="flex flex-col items-center gap-3 py-8">
               <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
               <p className="text-sm text-gray-500">正在递归扫描 PDF 文件...</p>
-              <p className="text-xs text-gray-400">极速模式：优先扫码 + 文本提取（不跑 AI）</p>
+              <p className="text-xs text-gray-400">极速模式：优先扫码 + 文本提取（不跑深度识别）</p>
             </div>
           )}
 
@@ -75,6 +105,21 @@ export default function FolderScanModal({
 
           {result && !scanning && (
             <div className="flex flex-col gap-4">
+              {importing && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3">
+                  <div className="flex items-center justify-between text-xs text-blue-700 mb-2">
+                    <span>{importStageText}</span>
+                    <span>{importPercent}%</span>
+                  </div>
+                  <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                      style={{ width: `${importPercent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* Summary cards */}
               <div className="grid grid-cols-3 gap-2">
                 <div className="bg-gray-50 rounded-lg p-3 text-center">
@@ -127,16 +172,25 @@ export default function FolderScanModal({
         <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-100 bg-gray-50">
           <button
             onClick={onCancel}
-            className="px-4 py-1.5 text-sm text-gray-600 hover:text-gray-800"
+            disabled={importing}
+            className="px-4 py-1.5 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             取消
           </button>
-          {result && result.invoices.length > 0 && (
+          {!importing && result && result.invoices.length > 0 && (
             <button
               onClick={onConfirm}
               className="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
             >
               导入 {result.invoices.length} 张发票
+            </button>
+          )}
+          {importing && (
+            <button
+              disabled
+              className="px-4 py-1.5 bg-blue-400 text-white text-sm rounded-md cursor-not-allowed"
+            >
+              正在导入识别...
             </button>
           )}
         </div>

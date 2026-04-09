@@ -5,6 +5,24 @@ import crypto from 'crypto'
 import { v4 as uuidv4 } from 'uuid'
 import { getDb, saveDb } from './dbHandler'
 
+export interface ImportedItem {
+  id: string
+  filePath: string
+}
+
+export interface ImportResult {
+  imported: number
+  skipped: number
+  importedItems: ImportedItem[]
+}
+
+export interface ImportStageProgress {
+  done: number
+  total: number
+  imported: number
+  skipped: number
+}
+
 function getInvoiceDir(): string {
   const dir = path.join(app.getPath('userData'), 'invoices')
   if (!fs.existsSync(dir)) {
@@ -22,14 +40,21 @@ function isPdf(filePath: string): boolean {
   return path.extname(filePath).toLowerCase() === '.pdf'
 }
 
-export function importPdfs(srcPaths: string[]): { imported: number; skipped: number } {
+export function importPdfs(
+  srcPaths: string[],
+  onProgress?: (progress: ImportStageProgress) => void
+): ImportResult {
   const db = getDb()
   const invoiceDir = getInvoiceDir()
   let imported = 0
   let skipped = 0
+  const importedItems: ImportedItem[] = []
+  let done = 0
+  const total = srcPaths.filter((p) => isPdf(p)).length
 
   for (const srcPath of srcPaths) {
     if (!isPdf(srcPath)) continue
+    done++
     try {
       const hash = hashFile(srcPath)
 
@@ -37,6 +62,7 @@ export function importPdfs(srcPaths: string[]): { imported: number; skipped: num
       const existing = db.exec(`SELECT id FROM invoices WHERE file_hash = '${hash}'`)
       if (existing.length > 0 && existing[0].values.length > 0) {
         skipped++
+        onProgress?.({ done, total, imported, skipped })
         continue
       }
 
@@ -55,21 +81,27 @@ export function importPdfs(srcPaths: string[]): { imported: number; skipped: num
       )
 
       imported++
+      importedItems.push({ id, filePath: destPath })
     } catch (err) {
       console.error('Failed to import', srcPath, err)
+      skipped++
     }
+    onProgress?.({ done, total, imported, skipped })
   }
 
   saveDb()
-  return { imported, skipped }
+  return { imported, skipped, importedItems }
 }
 
-export function importFolder(folderPath: string): { imported: number; skipped: number } {
+export function importFolder(
+  folderPath: string,
+  onProgress?: (progress: ImportStageProgress) => void
+): ImportResult {
   const files = fs.readdirSync(folderPath)
   const pdfPaths = files
     .filter((f) => isPdf(f))
     .map((f) => path.join(folderPath, f))
-  return importPdfs(pdfPaths)
+  return importPdfs(pdfPaths, onProgress)
 }
 
 export function getPdfBase64(filePath: string): string {

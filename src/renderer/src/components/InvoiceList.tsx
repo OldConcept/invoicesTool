@@ -96,7 +96,7 @@ function InvoiceCard({
                 runOcr(invoice)
               }}
               className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap"
-              title="自动识别"
+              title="重新识别"
             >
               识别
             </button>

@@ -1,15 +1,32 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+type ImportProgressPayload = {
+  phase: 'import' | 'ocr' | 'done'
+  done: number
+  total: number
+  imported: number
+  skipped: number
+  ocrProcessed: number
+  ocrFailed: number
+}
+
 const api = {
   // 文件操作
   selectPdfFiles: (): Promise<string[]> => ipcRenderer.invoke('select-pdf-files'),
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke('select-folder'),
-  importPdfs: (paths: string[]): Promise<{ success: boolean; imported: number; skipped: number }> =>
+  importPdfs: (
+    paths: string[]
+  ): Promise<{ success: boolean; imported: number; skipped: number; ocrProcessed: number; ocrFailed: number }> =>
     ipcRenderer.invoke('import-pdfs', paths),
   importFolder: (
     folderPath: string
-  ): Promise<{ success: boolean; imported: number; skipped: number }> =>
+  ): Promise<{ success: boolean; imported: number; skipped: number; ocrProcessed: number; ocrFailed: number }> =>
     ipcRenderer.invoke('import-folder', folderPath),
+  onImportProgress: (callback: (progress: ImportProgressPayload) => void): (() => void) => {
+    const listener = (_event: unknown, payload: ImportProgressPayload): void => callback(payload)
+    ipcRenderer.on('import-progress', listener)
+    return () => ipcRenderer.off('import-progress', listener)
+  },
   scanFolder: (
     folderPath: string,
     mode?: 'fast' | 'balanced' | 'accurate'
